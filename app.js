@@ -9,10 +9,7 @@ async function init() {
   showLoading(true);
   try {
     const holdings = await fetchCSV('portfolio.csv');
-    const symbols = holdings
-      .filter((h) => h.symbol !== 'cash')
-      .map((h) => h.symbol)
-      .join(',');
+    const symbols = holdings.map((h) => h.symbol).join(',');
 
     const quotes = symbols ? await fetchQuotes(symbols) : {};
     const portfolio = calculate(holdings, quotes);
@@ -58,24 +55,17 @@ function calculate(holdings, quotes) {
   const items = holdings.map((h) => {
     let price, change, changePercent, name;
 
-    if (h.symbol === 'cash') {
-      price = 1;
+    const q = quotes[h.symbol];
+    if (q) {
+      price = q.price;
+      change = q.change;
+      changePercent = q.changePercent;
+      name = q.name || h.name;
+    } else {
+      price = 0;
       change = 0;
       changePercent = 0;
       name = h.name;
-    } else {
-      const q = quotes[h.symbol];
-      if (q) {
-        price = q.price;
-        change = q.change;
-        changePercent = q.changePercent;
-        name = q.name || h.name;
-      } else {
-        price = 0;
-        change = 0;
-        changePercent = 0;
-        name = h.name;
-      }
     }
 
     const marketValue = h.shares * price;
@@ -109,15 +99,14 @@ function calculate(holdings, quotes) {
     } else {
       const targetValue = (item.targetPct / 100) * totalValue;
       const diff = Math.abs(targetValue - item.marketValue);
-      const refShares =
-        item.symbol === 'cash' ? Math.round(diff) : Math.floor(diff / item.price);
+      const refShares = Math.floor(diff / item.price);
 
       if (item.deviation > 0) {
         item.action = 'sell';
-        item.actionText = `卖出 ~${refShares}${item.symbol === 'cash' ? '元' : '股'}`;
+        item.actionText = `卖出 ~${refShares}股`;
       } else {
         item.action = 'buy';
-        item.actionText = `买入 ~${refShares}${item.symbol === 'cash' ? '元' : '股'}`;
+        item.actionText = `买入 ~${refShares}股`;
       }
       item.actionShares = refShares;
     }
@@ -162,7 +151,6 @@ function renderTable(items) {
 
   for (const item of items) {
     const tr = document.createElement('tr');
-    if (item.symbol === 'cash') tr.classList.add('row-cash');
 
     // 名称 + 代码
     const tdName = document.createElement('td');
@@ -170,18 +158,14 @@ function renderTable(items) {
     tr.appendChild(tdName);
 
     // 持仓
-    tr.appendChild(createTd(item.symbol === 'cash' ? formatCurrency(item.shares) : item.shares.toLocaleString()));
+    tr.appendChild(createTd(item.shares.toLocaleString()));
 
     // 最新价 + 涨跌幅
     const tdPrice = document.createElement('td');
-    if (item.symbol === 'cash') {
-      tdPrice.textContent = '-';
-    } else {
-      const priceClass =
-        item.changePercent > 0 ? 'price-up' : item.changePercent < 0 ? 'price-down' : 'price-flat';
-      const sign = item.changePercent > 0 ? '+' : '';
-      tdPrice.innerHTML = `<span class="${priceClass}">${item.price.toFixed(2)} <span class="change-tag">${sign}${item.changePercent.toFixed(2)}%</span></span>`;
-    }
+    const priceClass =
+      item.changePercent > 0 ? 'price-up' : item.changePercent < 0 ? 'price-down' : 'price-flat';
+    const sign = item.changePercent > 0 ? '+' : '';
+    tdPrice.innerHTML = `<span class="${priceClass}">${item.price.toFixed(2)} <span class="change-tag">${sign}${item.changePercent.toFixed(2)}%</span></span>`;
     tr.appendChild(tdPrice);
 
     // 市值

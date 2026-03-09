@@ -270,10 +270,6 @@ tbody tr:hover {
   background: var(--bg-secondary);
 }
 
-.row-cash {
-  color: var(--text-secondary);
-}
-
 /* ========== 响应式 ========== */
 @media (max-width: 768px) {
   .container {
