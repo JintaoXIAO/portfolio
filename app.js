@@ -1,5 +1,5 @@
 // ========== 配置 ==========
-const WORKER_URL = 'https://your-worker.your-subdomain.workers.dev';
+const WORKER_URL = 'https://stock-proxy.xiaojintao.workers.dev';
 const DEVIATION_THRESHOLD = 5; // 操作建议阈值 (%)
 
 // ========== 入口 ==========

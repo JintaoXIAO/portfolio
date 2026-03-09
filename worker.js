@@ -22,7 +22,9 @@ export default {
         headers: { 'Referer': 'https://finance.qq.com' },
       });
 
-      const text = await resp.text();
+      const buffer = await resp.arrayBuffer();
+      const decoder = new TextDecoder('gbk');
+      const text = decoder.decode(buffer);
       const stocks = parseQuotes(text);
 
       return jsonResponse(stocks);
