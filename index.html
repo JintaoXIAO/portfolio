@@ -13,7 +13,7 @@
     <div class="header">
       <div>
         <h1>投资组合追踪器</h1>
-        <div class="subtitle">持仓监控 &middot; 偏离度分析 &middot; 调仓建议</div>
+        <div class="subtitle">持仓监控 &middot; 偏离度分析 &middot; 调仓建议 &middot; AI 分析</div>
       </div>
       <div id="market-status" class="market-status"></div>
     </div>
@@ -122,6 +122,28 @@
           <button id="calc-rebalance-btn">计算分配</button>
         </div>
         <div id="rebalance-result"></div>
+      </div>
+
+      <!-- AI 持仓分析 -->
+      <div class="section-title">AI 持仓分析</div>
+      <div class="ai-card">
+        <div class="ai-desc">基于 Cloudflare Workers AI，对当前持仓进行智能分析，提供配置评价、风险提示和调仓建议。</div>
+        <div class="ai-actions">
+          <button id="ai-analyze-btn" class="ai-btn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93"/>
+              <path d="M8.24 9.93A4 4 0 0 1 12 2"/>
+              <path d="M12 18v4"/>
+              <path d="M8 22h8"/>
+              <circle cx="12" cy="14" r="4"/>
+            </svg>
+            开始分析
+          </button>
+          <button id="ai-stop-btn" class="ai-btn ai-btn-stop" style="display: none;">停止</button>
+        </div>
+        <div id="ai-result" class="ai-result" style="display: none;">
+          <div id="ai-content" class="ai-content"></div>
+        </div>
       </div>
 
       <!-- 底部警告 -->

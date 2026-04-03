@@ -25,6 +25,8 @@ let countdownTimer = null;
 let nextRefreshAt = 0;
 let isRefreshing = false;
 let lastRefreshTime = null;
+let aiAbortController = null;
+let isAIAnalyzing = false;
 
 // ========== 入口 ==========
 document.addEventListener('DOMContentLoaded', init);
@@ -42,6 +44,7 @@ async function init() {
   setupSorting();
   setupRebalancer();
   setupAutoRefresh();
+  setupAIAnalyzer();
 }
 
 async function loadAndRender(isRefresh = false) {
@@ -986,4 +989,288 @@ function showError(message) {
   if (container) {
     addAlert(container, 'error', message);
   }
+}
+
+// ========== AI 持仓分析 ==========
+
+function setupAIAnalyzer() {
+  const btn = document.getElementById('ai-analyze-btn');
+  const stopBtn = document.getElementById('ai-stop-btn');
+  if (!btn) return;
+
+  btn.addEventListener('click', () => {
+    if (isAIAnalyzing) return;
+    if (!currentPortfolio) {
+      showError('请先加载持仓数据');
+      return;
+    }
+    startAIAnalysis();
+  });
+
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      stopAIAnalysis();
+    });
+  }
+}
+
+async function startAIAnalysis() {
+  const btn = document.getElementById('ai-analyze-btn');
+  const stopBtn = document.getElementById('ai-stop-btn');
+  const resultDiv = document.getElementById('ai-result');
+  const contentDiv = document.getElementById('ai-content');
+
+  if (!btn || !resultDiv || !contentDiv) return;
+
+  // 准备 UI
+  isAIAnalyzing = true;
+  btn.disabled = true;
+  btn.classList.add('ai-btn-loading');
+  btn.innerHTML = `<span class="ai-spinner"></span>分析中...`;
+  if (stopBtn) stopBtn.style.display = 'inline-flex';
+  resultDiv.style.display = 'block';
+  contentDiv.innerHTML = '<div class="ai-typing">AI 正在分析您的持仓数据...</div>';
+
+  // 准备发送的数据
+  const portfolio = preparePortfolioForAI(currentPortfolio);
+
+  // 创建 AbortController 用于取消请求
+  aiAbortController = new AbortController();
+
+  try {
+    const resp = await fetch(`${WORKER_URL}/ai/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ portfolio }),
+      signal: aiAbortController.signal,
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: '请求失败' }));
+      throw new Error(err.error || `HTTP ${resp.status}`);
+    }
+
+    // 读取 SSE 流
+    await readSSEStream(resp.body, contentDiv);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      appendToContent(contentDiv, '\n\n---\n*分析已停止*');
+    } else {
+      contentDiv.innerHTML = `<div class="ai-error">分析失败: ${err.message}</div>`;
+    }
+  } finally {
+    finishAIAnalysis();
+  }
+}
+
+function stopAIAnalysis() {
+  if (aiAbortController) {
+    aiAbortController.abort();
+    aiAbortController = null;
+  }
+}
+
+function finishAIAnalysis() {
+  isAIAnalyzing = false;
+  aiAbortController = null;
+
+  const btn = document.getElementById('ai-analyze-btn');
+  const stopBtn = document.getElementById('ai-stop-btn');
+
+  if (btn) {
+    btn.disabled = false;
+    btn.classList.remove('ai-btn-loading');
+    btn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93"/><path d="M8.24 9.93A4 4 0 0 1 12 2"/><path d="M12 18v4"/><path d="M8 22h8"/><circle cx="12" cy="14" r="4"/></svg>重新分析`;
+  }
+  if (stopBtn) stopBtn.style.display = 'none';
+}
+
+/**
+ * 读取 SSE 流并实时渲染内容
+ */
+async function readSSEStream(body, contentDiv) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let fullText = '';
+  let buffer = '';
+
+  contentDiv.innerHTML = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // 解析 SSE 事件
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // 保留不完整的行
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === 'data: [DONE]') continue;
+
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(trimmed.slice(6));
+          if (data.response) {
+            fullText += data.response;
+            renderMarkdown(contentDiv, fullText);
+          }
+        } catch {
+          // 忽略解析错误
+        }
+      }
+    }
+  }
+
+  // 处理缓冲区中剩余内容
+  if (buffer.trim() && buffer.trim() !== 'data: [DONE]') {
+    if (buffer.trim().startsWith('data: ')) {
+      try {
+        const data = JSON.parse(buffer.trim().slice(6));
+        if (data.response) {
+          fullText += data.response;
+          renderMarkdown(contentDiv, fullText);
+        }
+      } catch {
+        // 忽略
+      }
+    }
+  }
+
+  if (!fullText) {
+    contentDiv.innerHTML = '<div class="ai-error">AI 未返回任何内容，请重试。</div>';
+  }
+}
+
+/**
+ * 简易 Markdown 渲染（支持标题、加粗、列表、分隔线、段落）
+ */
+function renderMarkdown(container, text) {
+  const lines = text.split('\n');
+  let html = '';
+  let inList = false;
+  let listType = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+
+    // 水平线
+    if (/^---+$/.test(line.trim())) {
+      if (inList) { html += `</${listType}>`; inList = false; }
+      html += '<hr>';
+      continue;
+    }
+
+    // 标题
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
+    if (headingMatch) {
+      if (inList) { html += `</${listType}>`; inList = false; }
+      const level = headingMatch[1].length;
+      html += `<h${level + 2}>${inlineFormat(headingMatch[2])}</h${level + 2}>`;
+      continue;
+    }
+
+    // 有序列表
+    const olMatch = line.match(/^\d+\.\s+(.+)/);
+    if (olMatch) {
+      if (!inList || listType !== 'ol') {
+        if (inList) html += `</${listType}>`;
+        html += '<ol>';
+        inList = true;
+        listType = 'ol';
+      }
+      html += `<li>${inlineFormat(olMatch[1])}</li>`;
+      continue;
+    }
+
+    // 无序列表
+    const ulMatch = line.match(/^[-*]\s+(.+)/);
+    if (ulMatch) {
+      if (!inList || listType !== 'ul') {
+        if (inList) html += `</${listType}>`;
+        html += '<ul>';
+        inList = true;
+        listType = 'ul';
+      }
+      html += `<li>${inlineFormat(ulMatch[1])}</li>`;
+      continue;
+    }
+
+    // 非列表行 -> 关闭列表
+    if (inList && line.trim() === '') {
+      html += `</${listType}>`;
+      inList = false;
+    }
+
+    // 空行
+    if (line.trim() === '') {
+      continue;
+    }
+
+    // 普通段落
+    if (inList) { html += `</${listType}>`; inList = false; }
+    html += `<p>${inlineFormat(line)}</p>`;
+  }
+
+  if (inList) html += `</${listType}>`;
+
+  container.innerHTML = html;
+}
+
+/**
+ * 内联格式化：加粗、斜体、代码
+ */
+function inlineFormat(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+}
+
+function appendToContent(contentDiv, text) {
+  const current = contentDiv.textContent || '';
+  renderMarkdown(contentDiv, current + text);
+}
+
+/**
+ * 将 currentPortfolio 精简为适合发送给 AI 的格式
+ */
+function preparePortfolioForAI(portfolio) {
+  return {
+    totalValue: portfolio.totalValue,
+    todayPnl: portfolio.todayPnl,
+    totalPnl: portfolio.totalPnl,
+    totalPnlPct: portfolio.totalPnlPct,
+    totalCost: portfolio.totalCost,
+    count: portfolio.count,
+    maxDeviation: portfolio.maxDeviation,
+    categories: portfolio.categories.map((cat) => ({
+      name: cat.name,
+      marketValue: cat.marketValue,
+      targetPct: cat.targetPct,
+      actualPct: cat.actualPct,
+      deviation: cat.deviation,
+    })),
+    items: portfolio.items
+      .filter((i) => !i.quoteError)
+      .map((i) => ({
+        name: i.name,
+        symbol: i.symbol,
+        category: i.category,
+        shares: i.shares,
+        price: i.price,
+        marketValue: i.marketValue,
+        targetPct: i.targetPct,
+        actualPct: i.actualPct,
+        deviation: i.deviation,
+        pnl: i.pnl,
+        pnlPct: i.pnlPct,
+        costPrice: i.costPrice,
+        changePercent: i.changePercent,
+        isCash: i.isCash,
+        actionText: i.actionText,
+      })),
+  };
 }
