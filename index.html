@@ -13,8 +13,9 @@
     <div class="header">
       <div>
         <h1>投资组合追踪器</h1>
-        <div class="subtitle">A 股持仓监控 &middot; 自动计算偏离度与调仓建议</div>
+        <div class="subtitle">持仓监控 &middot; 偏离度分析 &middot; 调仓建议</div>
       </div>
+      <div id="market-status" class="market-status"></div>
     </div>
 
     <!-- 加载状态 -->
@@ -33,6 +34,14 @@
           <div class="value" id="total-value">-</div>
         </div>
         <div class="card">
+          <div class="label">今日盈亏</div>
+          <div class="value" id="today-pnl">-</div>
+        </div>
+        <div class="card">
+          <div class="label">持仓盈亏</div>
+          <div class="value" id="total-pnl" style="font-size: 1.1rem;">-</div>
+        </div>
+        <div class="card">
           <div class="label">持仓品种</div>
           <div class="value" id="stock-count">-</div>
         </div>
@@ -46,23 +55,73 @@
         </div>
       </div>
 
-      <!-- 持仓明细表 -->
+      <!-- 资产配置图 -->
+      <div class="section-title">资产配置</div>
+      <div class="charts-section">
+        <div class="chart-card">
+          <h3>目标配置</h3>
+          <div class="chart-body">
+            <div id="target-pie" class="pie-container"></div>
+            <div id="target-legend" class="legend-container"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>实际配置</h3>
+          <div class="chart-body">
+            <div id="actual-pie" class="pie-container"></div>
+            <div id="actual-legend" class="legend-container"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 资产分类汇总 -->
+      <div class="section-title">分类汇总</div>
       <div class="table-wrapper">
         <table>
           <thead>
             <tr>
-              <th>标的</th>
-              <th>持仓</th>
-              <th>最新价</th>
+              <th style="text-align:left">类别</th>
               <th>市值</th>
               <th>目标占比</th>
               <th>实际占比</th>
               <th>偏离</th>
+            </tr>
+          </thead>
+          <tbody id="category-body"></tbody>
+        </table>
+      </div>
+
+      <!-- 持仓明细表 -->
+      <div class="section-title">持仓明细</div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="name">标的</th>
+              <th data-sort="shares">持仓</th>
+              <th data-sort="price">最新价</th>
+              <th data-sort="marketValue">市值</th>
+              <th data-sort="pnl">盈亏</th>
+              <th data-sort="targetPct">目标占比</th>
+              <th data-sort="actualPct">实际占比</th>
+              <th data-sort="deviation">偏离</th>
               <th>操作建议</th>
             </tr>
           </thead>
           <tbody id="holdings-body"></tbody>
+          <tfoot id="holdings-foot"></tfoot>
         </table>
+      </div>
+
+      <!-- 增量调仓计算器 -->
+      <div class="section-title">增量调仓计算器</div>
+      <div class="rebalancer-card">
+        <div class="rebalancer-desc">输入新增资金，自动计算最优买入分配方案（按偏离度分配，ETF 整手 100 股）</div>
+        <div class="rebalancer-input">
+          <input type="number" id="new-cash-input" placeholder="输入新增资金 (元)" min="0" step="100" />
+          <button id="calc-rebalance-btn">计算分配</button>
+        </div>
+        <div id="rebalance-result"></div>
       </div>
 
       <!-- 底部警告 -->
