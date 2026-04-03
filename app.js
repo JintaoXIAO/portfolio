@@ -9,7 +9,7 @@ async function init() {
   showLoading(true);
   try {
     const holdings = await fetchCSV('portfolio.csv');
-    const symbols = holdings.map((h) => h.symbol).join(',');
+    const symbols = holdings.filter((h) => !isCash(h.symbol)).map((h) => h.symbol).join(',');
 
     const quotes = symbols ? await fetchQuotes(symbols) : {};
     const portfolio = calculate(holdings, quotes);
@@ -55,17 +55,25 @@ function calculate(holdings, quotes) {
   const items = holdings.map((h) => {
     let price, change, changePercent, name;
 
-    const q = quotes[h.symbol];
-    if (q) {
-      price = q.price;
-      change = q.change;
-      changePercent = q.changePercent;
-      name = q.name || h.name;
-    } else {
-      price = 0;
+    if (isCash(h.symbol)) {
+      // 现金：价格固定为1，市值即金额
+      price = 1;
       change = 0;
       changePercent = 0;
       name = h.name;
+    } else {
+      const q = quotes[h.symbol];
+      if (q) {
+        price = q.price;
+        change = q.change;
+        changePercent = q.changePercent;
+        name = q.name || h.name;
+      } else {
+        price = 0;
+        change = 0;
+        changePercent = 0;
+        name = h.name;
+      }
     }
 
     const marketValue = h.shares * price;
@@ -79,6 +87,7 @@ function calculate(holdings, quotes) {
       changePercent,
       targetPct: h.targetPct,
       marketValue,
+      isCash: isCash(h.symbol),
     };
   });
 
@@ -99,16 +108,28 @@ function calculate(holdings, quotes) {
     } else {
       const targetValue = (item.targetPct / 100) * totalValue;
       const diff = Math.abs(targetValue - item.marketValue);
-      const refShares = Math.floor(diff / item.price);
 
-      if (item.deviation > 0) {
-        item.action = 'sell';
-        item.actionText = `卖出 ~${refShares}股`;
+      if (item.isCash) {
+        // 现金：操作建议显示金额
+        if (item.deviation > 0) {
+          item.action = 'sell';
+          item.actionText = `转出 ~${formatCurrency(diff)}`;
+        } else {
+          item.action = 'buy';
+          item.actionText = `转入 ~${formatCurrency(diff)}`;
+        }
+        item.actionShares = 0;
       } else {
-        item.action = 'buy';
-        item.actionText = `买入 ~${refShares}股`;
+        const refShares = Math.floor(diff / item.price);
+        if (item.deviation > 0) {
+          item.action = 'sell';
+          item.actionText = `卖出 ~${refShares}股`;
+        } else {
+          item.action = 'buy';
+          item.actionText = `买入 ~${refShares}股`;
+        }
+        item.actionShares = refShares;
       }
-      item.actionShares = refShares;
     }
   }
 
@@ -154,18 +175,30 @@ function renderTable(items) {
 
     // 名称 + 代码
     const tdName = document.createElement('td');
-    tdName.innerHTML = `<span class="stock-name">${item.name}</span><span class="stock-symbol">${item.symbol}</span>`;
+    if (item.isCash) {
+      tdName.innerHTML = `<span class="stock-name">${item.name}</span><span class="stock-symbol">现金</span>`;
+    } else {
+      tdName.innerHTML = `<span class="stock-name">${item.name}</span><span class="stock-symbol">${item.symbol}</span>`;
+    }
     tr.appendChild(tdName);
 
-    // 持仓
-    tr.appendChild(createTd(item.shares.toLocaleString()));
+    // 持仓（现金显示金额，股票显示股数）
+    if (item.isCash) {
+      tr.appendChild(createTd(formatCurrency(item.shares)));
+    } else {
+      tr.appendChild(createTd(item.shares.toLocaleString()));
+    }
 
-    // 最新价 + 涨跌幅
+    // 最新价 + 涨跌幅（现金不显示）
     const tdPrice = document.createElement('td');
-    const priceClass =
-      item.changePercent > 0 ? 'price-up' : item.changePercent < 0 ? 'price-down' : 'price-flat';
-    const sign = item.changePercent > 0 ? '+' : '';
-    tdPrice.innerHTML = `<span class="${priceClass}">${item.price.toFixed(2)} <span class="change-tag">${sign}${item.changePercent.toFixed(2)}%</span></span>`;
+    if (item.isCash) {
+      tdPrice.innerHTML = '<span class="price-flat">-</span>';
+    } else {
+      const priceClass =
+        item.changePercent > 0 ? 'price-up' : item.changePercent < 0 ? 'price-down' : 'price-flat';
+      const sign = item.changePercent > 0 ? '+' : '';
+      tdPrice.innerHTML = `<span class="${priceClass}">${item.price.toFixed(2)} <span class="change-tag">${sign}${item.changePercent.toFixed(2)}%</span></span>`;
+    }
     tr.appendChild(tdPrice);
 
     // 市值
@@ -225,6 +258,10 @@ function renderAlerts({ maxDeviation, totalTargetPct }) {
 }
 
 // ========== 工具函数 ==========
+
+function isCash(symbol) {
+  return symbol.toLowerCase() === 'cash';
+}
 
 function createTd(text) {
   const td = document.createElement('td');
