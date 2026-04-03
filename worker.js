@@ -4,6 +4,39 @@
 
 const AI_MODEL = '@cf/moonshotai/kimi-k2.5';
 
+const SYSTEM_PROMPT = `你是一位拥有 10 年以上经验的 A 股 ETF 投资组合分析师。你的客户是普通个人投资者，采用被动指数化投资策略，通过 ETF 构建多资产组合并定期再平衡。
+
+## 你的分析风格
+- 专业但易懂：用数据说话，避免空洞的套话，确保非金融专业人士也能理解
+- 直接给结论：先说判断，再给依据，不要铺垫
+- 重点突出：对需要立即关注的问题用"**加粗**"标注
+- 务实可执行：建议要具体到"买/卖什么、大约多少"，而非"建议适当调整"这类模糊表述
+
+## 输出格式要求
+使用 Markdown 格式，按以下结构组织报告：
+
+### 1. 组合体检（用 1-2 句话给出总体判断）
+给出组合的健康评级（优秀/良好/一般/需关注），并说明理由。
+
+### 2. 配置分析
+分析大类资产配置是否合理，重点指出偏离目标较大的类别。与常见的资产配置框架对比（如股债比例、国内外分散等）。
+
+### 3. 风险提示
+识别当前组合的主要风险点（集中度、单一市场敞口、汇率、利率等），按重要性排序，每个风险点简要说明影响和程度。
+
+### 4. 持仓点评
+只点评需要关注的个别品种（偏离大、浮亏多、或有特殊情况的），不需要逐一点评每个持仓。正常的品种一笔带过即可。
+
+### 5. 操作建议
+给出 2-4 条具体可执行的建议，按优先级排序。每条建议说清楚：做什么、为什么、大致幅度。
+
+## 约束
+- 不要使用表情符号
+- 不要生成表格（前端已有详细表格，避免重复）
+- 不要重复罗列原始数据，直接引用关键数字即可
+- 控制篇幅，整体 800-1200 字为宜
+- 在报告末尾加一句简短的风险免责声明`;
+
 export default {
   async fetch(request, env) {
     // 处理 CORS 预检请求
@@ -105,17 +138,11 @@ async function handleAIAnalyze(request, env) {
     const prompt = buildAnalysisPrompt(portfolio);
     const stream = await env.AI.run(AI_MODEL, {
       messages: [
-        {
-          role: 'system',
-          content: '你是一位专业的投资组合分析师，擅长分析A股和ETF投资组合。请用简洁专业的中文回答，使用 Markdown 格式。不要使用表情符号。',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
       ],
       stream: true,
-      max_tokens: 2048,
+      max_tokens: 4096,
     });
 
     // 返回 SSE 流
@@ -140,50 +167,51 @@ function buildAnalysisPrompt(portfolio) {
     count, maxDeviation, categories, items,
   } = portfolio;
 
-  let prompt = '请分析以下 A股/ETF 投资组合，并给出专业的持仓分析报告。\n\n';
+  const lines = [];
 
-  // 组合概况
-  prompt += '## 组合概况\n';
-  prompt += `- 总市值：${fmtCNY(totalValue)}\n`;
-  prompt += `- 今日盈亏：${fmtCNY(todayPnl)}\n`;
-  prompt += `- 持仓盈亏：${fmtCNY(totalPnl)}（${totalPnlPct != null ? totalPnlPct.toFixed(2) + '%' : '无数据'}）\n`;
-  prompt += `- 持仓品种：${count} 个\n`;
-  prompt += `- 最大偏离度：${maxDeviation.toFixed(2)}%\n\n`;
+  lines.push('请根据以下数据分析我的 ETF 投资组合。');
+  lines.push('');
 
-  // 分类配置
+  // 组合概况 — 紧凑格式，节省 token
+  lines.push('## 组合概况');
+  lines.push(`总市值 ${fmtCNY(totalValue)}，${count} 个品种，最大偏离 ${maxDeviation.toFixed(2)}%`);
+  const pnlPctStr = totalPnlPct != null ? `(${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%)` : '';
+  lines.push(`持仓盈亏 ${fmtCNY(totalPnl)} ${pnlPctStr}，今日盈亏 ${fmtCNY(todayPnl)}`);
+  lines.push('');
+
+  // 分类配置 — 只输出关键字段
   if (categories && categories.length > 0) {
-    prompt += '## 分类配置\n';
-    prompt += '| 类别 | 市值 | 目标占比 | 实际占比 | 偏离 |\n';
-    prompt += '|------|------|---------|---------|------|\n';
+    lines.push('## 分类配置');
     for (const cat of categories) {
-      const dev = cat.deviation > 0 ? `+${cat.deviation.toFixed(2)}%` : `${cat.deviation.toFixed(2)}%`;
-      prompt += `| ${cat.name} | ${fmtCNY(cat.marketValue)} | ${cat.targetPct.toFixed(1)}% | ${cat.actualPct.toFixed(1)}% | ${dev} |\n`;
+      const devSign = cat.deviation >= 0 ? '+' : '';
+      lines.push(`- ${cat.name}：${fmtCNY(cat.marketValue)}，目标 ${cat.targetPct.toFixed(1)}% → 实际 ${cat.actualPct.toFixed(1)}%（偏离 ${devSign}${cat.deviation.toFixed(2)}%）`);
     }
-    prompt += '\n';
+    lines.push('');
   }
 
-  // 持仓明细
+  // 持仓明细 — 只列关键信息
   if (items && items.length > 0) {
-    prompt += '## 持仓明细\n';
-    prompt += '| 标的 | 类别 | 市值 | 盈亏% | 目标% | 实际% | 偏离% | 建议 |\n';
-    prompt += '|------|------|------|-------|-------|-------|-------|------|\n';
+    lines.push('## 持仓明细');
     for (const item of items) {
       if (item.quoteError) continue;
-      const pnlStr = item.pnlPct != null ? `${item.pnlPct.toFixed(2)}%` : '-';
-      const devStr = item.deviation > 0 ? `+${item.deviation.toFixed(2)}%` : `${item.deviation.toFixed(2)}%`;
-      prompt += `| ${item.name} | ${item.category} | ${fmtCNY(item.marketValue)} | ${pnlStr} | ${item.targetPct.toFixed(1)}% | ${item.actualPct.toFixed(1)}% | ${devStr} | ${item.actionText} |\n`;
+      const parts = [`${item.name}（${item.category}）`];
+      parts.push(`市值 ${fmtCNY(item.marketValue)}`);
+      if (item.pnlPct != null) {
+        parts.push(`盈亏 ${item.pnlPct >= 0 ? '+' : ''}${item.pnlPct.toFixed(2)}%`);
+      }
+      const devSign = item.deviation >= 0 ? '+' : '';
+      parts.push(`目标 ${item.targetPct.toFixed(1)}% → 实际 ${item.actualPct.toFixed(1)}%（偏离 ${devSign}${item.deviation.toFixed(2)}%）`);
+      if (item.actionText && item.actionText !== '持有') {
+        parts.push(`系统建议: ${item.actionText}`);
+      }
+      lines.push(`- ${parts.join('，')}`);
     }
-    prompt += '\n';
+    lines.push('');
   }
 
-  prompt += '## 请从以下维度分析\n';
-  prompt += '1. **整体评价**：组合健康度、资产配置是否合理、分散化程度\n';
-  prompt += '2. **风险分析**：集中度风险、市场风险、汇率风险（港美股部分）、利率风险（债券部分）\n';
-  prompt += '3. **配置建议**：哪些资产类别配置偏高或偏低，应如何调整\n';
-  prompt += '4. **重点关注**：偏离度较大或浮亏较多的品种，分析原因和应对策略\n';
-  prompt += '5. **操作建议**：给出具体、可执行的调仓建议\n';
+  lines.push('请按系统提示中的输出格式生成分析报告。');
 
-  return prompt;
+  return lines.join('\n');
 }
 
 /**
