@@ -531,6 +531,45 @@ tfoot td:first-child {
   }
 }
 
+/* ========== 浮动刷新按钮 ========== */
+.fab-refresh {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--accent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s, transform 0.15s, color 0.15s;
+  z-index: 100;
+}
+
+.fab-refresh:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: scale(1.08);
+}
+
+.fab-refresh:active {
+  transform: scale(0.95);
+}
+
+.fab-refresh.refreshing {
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+.fab-refresh.refreshing svg {
+  animation: spin 0.8s linear infinite;
+}
+
 /* ========== 响应式 ========== */
 @media (max-width: 768px) {
   .container {

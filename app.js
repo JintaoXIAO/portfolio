@@ -1,7 +1,7 @@
 // ========== 配置 ==========
 const WORKER_URL = 'https://stock-proxy.xiaojintao.workers.dev';
 const DEVIATION_THRESHOLD = 5; // 操作建议阈值 (%)
-const REFRESH_INTERVAL = 15000; // 自动刷新间隔 (ms)
+const REFRESH_INTERVAL = 5 * 60 * 1000; // 自动刷新间隔 (5分钟)
 const LOT_SIZE = 100; // ETF 最小交易单位
 
 const CATEGORY_COLORS = {
@@ -23,6 +23,8 @@ let sortAscending = true;
 let refreshTimer = null;
 let countdownTimer = null;
 let nextRefreshAt = 0;
+let isRefreshing = false;
+let lastRefreshTime = null;
 
 // ========== 入口 ==========
 document.addEventListener('DOMContentLoaded', init);
@@ -43,17 +45,26 @@ async function init() {
 }
 
 async function loadAndRender(isRefresh = false) {
-  if (!cachedHoldings) {
-    cachedHoldings = await fetchCSV('portfolio.csv');
+  if (isRefreshing) return;
+  isRefreshing = true;
+  updateRefreshButton();
+  try {
+    if (!cachedHoldings) {
+      cachedHoldings = await fetchCSV('portfolio.csv');
+    }
+    const holdings = cachedHoldings;
+    const symbols = holdings
+      .filter((h) => !isCash(h.symbol))
+      .map((h) => h.symbol)
+      .join(',');
+    const quotes = symbols ? await fetchQuotes(symbols) : {};
+    currentPortfolio = calculate(holdings, quotes);
+    lastRefreshTime = new Date();
+    render(currentPortfolio);
+  } finally {
+    isRefreshing = false;
+    updateRefreshButton();
   }
-  const holdings = cachedHoldings;
-  const symbols = holdings
-    .filter((h) => !isCash(h.symbol))
-    .map((h) => h.symbol)
-    .join(',');
-  const quotes = symbols ? await fetchQuotes(symbols) : {};
-  currentPortfolio = calculate(holdings, quotes);
-  render(currentPortfolio);
 }
 
 // ========== 数据获取 ==========
@@ -718,7 +729,7 @@ function renderAlerts({ maxDeviation, totalTargetPct, errorItems }) {
   }
 }
 
-// ========== 自动刷新 ==========
+// ========== 自动刷新 & 手动刷新 ==========
 
 function setupAutoRefresh() {
   checkAndToggleRefresh();
@@ -729,10 +740,42 @@ function setupAutoRefresh() {
     checkAndToggleRefresh();
   }, 60000);
 
-  // 每秒更新倒计时
+  // 每秒更新状态显示
   countdownTimer = setInterval(() => {
     updateMarketStatusDisplay();
   }, 1000);
+
+  // 浮动刷新按钮
+  setupRefreshButton();
+}
+
+function setupRefreshButton() {
+  const btn = document.getElementById('refresh-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (isRefreshing) return;
+    try {
+      await loadAndRender(true);
+      // 重置自动刷新计时
+      if (refreshTimer) {
+        startRefreshTimer();
+      }
+    } catch (err) {
+      console.error('手动刷新失败:', err);
+    }
+  });
+}
+
+function updateRefreshButton() {
+  const btn = document.getElementById('refresh-btn');
+  if (!btn) return;
+  if (isRefreshing) {
+    btn.classList.add('refreshing');
+    btn.title = '刷新中...';
+  } else {
+    btn.classList.remove('refreshing');
+    btn.title = '点击刷新';
+  }
 }
 
 function checkAndToggleRefresh() {
@@ -797,17 +840,33 @@ function updateMarketStatusDisplay() {
   if (!el) return;
 
   const status = getMarketStatus();
+  let text = status.text;
+
   if (status.shouldRefresh && refreshTimer) {
-    const remaining = Math.max(
-      0,
-      Math.ceil((nextRefreshAt - Date.now()) / 1000)
-    );
-    el.textContent = `${status.text} · ${remaining}s 后刷新`;
+    const remaining = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
+    const min = Math.floor(remaining / 60);
+    const sec = remaining % 60;
+    const countdown = min > 0 ? `${min}分${sec}秒` : `${sec}秒`;
+    text += ` · ${countdown}后刷新`;
     el.className = 'market-status market-open';
   } else {
-    el.textContent = status.text;
     el.className = 'market-status market-closed';
   }
+
+  if (lastRefreshTime) {
+    const ago = Math.floor((Date.now() - lastRefreshTime.getTime()) / 1000);
+    let agoText;
+    if (ago < 60) {
+      agoText = `${ago}秒前更新`;
+    } else if (ago < 3600) {
+      agoText = `${Math.floor(ago / 60)}分钟前更新`;
+    } else {
+      agoText = formatTime(lastRefreshTime) + ' 更新';
+    }
+    text += ` · ${agoText}`;
+  }
+
+  el.textContent = text;
 }
 
 // ========== 增量调仓 ==========
