@@ -1107,40 +1107,53 @@ async function readSSEStream(body, contentDiv) {
     buffer = lines.pop() || ''; // 保留不完整的行
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]') continue;
-
-      if (trimmed.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(trimmed.slice(6));
-          if (data.response) {
-            fullText += data.response;
-            renderMarkdown(contentDiv, fullText);
-          }
-        } catch {
-          // 忽略解析错误
-        }
+      const token = extractToken(line);
+      if (token) {
+        fullText += token;
+        renderMarkdown(contentDiv, fullText);
       }
     }
   }
 
   // 处理缓冲区中剩余内容
-  if (buffer.trim() && buffer.trim() !== 'data: [DONE]') {
-    if (buffer.trim().startsWith('data: ')) {
-      try {
-        const data = JSON.parse(buffer.trim().slice(6));
-        if (data.response) {
-          fullText += data.response;
-          renderMarkdown(contentDiv, fullText);
-        }
-      } catch {
-        // 忽略
-      }
-    }
+  const lastToken = extractToken(buffer);
+  if (lastToken) {
+    fullText += lastToken;
+    renderMarkdown(contentDiv, fullText);
   }
 
   if (!fullText) {
     contentDiv.innerHTML = '<div class="ai-error">AI 未返回任何内容，请重试。</div>';
+  }
+}
+
+/**
+ * 从 SSE 行中提取文本 token
+ * 兼容两种格式：
+ *   旧格式: {"response": "text"}
+ *   OpenAI 格式: {"choices": [{"delta": {"content": "text"}}]}
+ *   推理模型: {"choices": [{"delta": {"reasoning_content": "text"}}]}
+ */
+function extractToken(line) {
+  const trimmed = (line || '').trim();
+  if (!trimmed || trimmed === 'data: [DONE]') return null;
+  if (!trimmed.startsWith('data: ')) return null;
+
+  try {
+    const data = JSON.parse(trimmed.slice(6));
+
+    // 旧格式: {"response": "..."}
+    if (data.response) return data.response;
+
+    // OpenAI 兼容格式: {"choices": [{"delta": {...}}]}
+    const delta = data.choices?.[0]?.delta;
+    if (delta) {
+      return delta.content || delta.reasoning_content || delta.reasoning || null;
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 

@@ -2,7 +2,7 @@
 // 部署方式：在 Cloudflare Dashboard 创建 Worker，粘贴此代码
 // AI 功能需要在 Worker Settings > Variables 中添加 AI Binding，变量名设为 AI
 
-const AI_MODEL = '@cf/qwen/qwen1.5-14b-chat-awq';
+const AI_MODEL = '@cf/moonshotai/kimi-k2.5';
 
 export default {
   async fetch(request, env) {
