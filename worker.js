@@ -15,6 +15,7 @@ const SYSTEM_PROMPT = `你是一位拥有 10 年以上经验的 A 股 ETF 投资
 - 重点突出：对需要立即关注的问题用"**加粗**"标注
 - 务实可执行：建议要具体到"买/卖什么、大约多少"，而非"建议适当调整"这类模糊表述
 - 新闻驱动：你会收到近期财经新闻摘要，必须从中筛选与客户组合有实际影响的信息，并明确说明影响路径（例如：美联储降息 → 人民币升值压力缓解 → 利好 QDII 类 ETF）
+- 数据敏感：你会收到 VIX 恐慌指数、上证指数、美元/人民币汇率等市场指标，分析时应结合这些量化数据判断市场情绪和风险水平，而非仅依赖新闻文字
 
 ## 输出格式要求
 使用 Markdown 格式，按以下结构组织报告：
@@ -23,7 +24,7 @@ const SYSTEM_PROMPT = `你是一位拥有 10 年以上经验的 A 股 ETF 投资
 给出组合的健康评级（优秀/良好/一般/需关注），并说明理由。
 
 ### 2. 市场环境与影响
-从提供的近期新闻中，筛选 2-3 条与客户组合最相关的事件或趋势。每条需说明：
+先基于提供的市场指标（VIX、上证指数、汇率）概括当前市场情绪和风险水平（1-2 句话），再从近期新闻中筛选 2-3 条与客户组合最相关的事件或趋势。每条需说明：
 - 事件本身（一句话概括）
 - 影响路径（如何传导到组合中的具体持仓）
 - 影响方向与程度（利好/利空/中性，影响大/小）
@@ -142,6 +143,73 @@ async function fetchNews() {
   }
 }
 
+// ========== 市场指标获取 ==========
+
+/**
+ * 并行获取 VIX、上证指数、美元/人民币汇率
+ * 任意一项失败不影响其他，返回尽可能多的数据
+ */
+async function fetchMarketIndicators() {
+  const indicators = {};
+
+  const [quotesResult, fxResult] = await Promise.allSettled([
+    // VIX + 上证指数 — 复用腾讯接口
+    (async () => {
+      const resp = await fetch('https://qt.gtimg.cn/q=sh000001,usVIX', {
+        headers: { 'Referer': 'https://finance.qq.com' },
+      });
+      const buffer = await resp.arrayBuffer();
+      const decoder = new TextDecoder('gbk');
+      return decoder.decode(buffer);
+    })(),
+    // 美元/人民币汇率 — 免费汇率 API
+    (async () => {
+      const resp = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
+      return resp.json();
+    })(),
+  ]);
+
+  // 解析上证指数 + VIX
+  if (quotesResult.status === 'fulfilled') {
+    const text = quotesResult.value;
+    const lines = text.split(';').filter((l) => l.trim());
+    for (const line of lines) {
+      const match = line.match(/v_(\w+)="(.*)"/);
+      if (!match) continue;
+      const symbol = match[1];
+      const fields = match[2].split('~');
+      if (fields.length < 33) continue;
+
+      if (symbol === 'sh000001') {
+        indicators.sse = {
+          name: '上证指数',
+          price: parseFloat(fields[3]),
+          changePercent: parseFloat(fields[32]),
+        };
+      } else if (symbol === 'usVIX') {
+        indicators.vix = {
+          name: 'VIX 恐慌指数',
+          price: parseFloat(fields[3]),
+          changePercent: parseFloat(fields[32]),
+        };
+      }
+    }
+  }
+
+  // 解析汇率
+  if (fxResult.status === 'fulfilled') {
+    const cny = fxResult.value?.rates?.CNY;
+    if (cny) {
+      indicators.usdcny = {
+        name: '美元/人民币',
+        price: cny,
+      };
+    }
+  }
+
+  return indicators;
+}
+
 // ========== AI 持仓分析 ==========
 
 async function handleAIAnalyze(request, env) {
@@ -166,8 +234,12 @@ async function handleAIAnalyze(request, env) {
   }
 
   try {
-    const news = await fetchNews();
-    const prompt = buildAnalysisPrompt(portfolio, news);
+    // 并行获取新闻和市场指标，不阻塞彼此
+    const [news, marketIndicators] = await Promise.all([
+      fetchNews(),
+      fetchMarketIndicators(),
+    ]);
+    const prompt = buildAnalysisPrompt(portfolio, news, marketIndicators);
     const stream = await env.AI.run(AI_MODEL, {
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -193,7 +265,7 @@ async function handleAIAnalyze(request, env) {
 /**
  * 构建分析 prompt，将持仓数据结构化为文本
  */
-function buildAnalysisPrompt(portfolio, news = []) {
+function buildAnalysisPrompt(portfolio, news = [], market = {}) {
   const {
     totalValue, todayPnl, totalPnl, totalPnlPct,
     count, maxDeviation, categories, items,
@@ -207,6 +279,24 @@ function buildAnalysisPrompt(portfolio, news = []) {
   // 分析日期
   lines.push(`分析日期：${new Date().toISOString().split('T')[0]}`);
   lines.push('');
+
+  // 市场指标
+  const hasMarket = market.sse || market.vix || market.usdcny;
+  if (hasMarket) {
+    lines.push('## 市场指标');
+    if (market.sse) {
+      const sign = market.sse.changePercent >= 0 ? '+' : '';
+      lines.push(`- 上证指数：${market.sse.price.toFixed(2)}（${sign}${market.sse.changePercent.toFixed(2)}%）`);
+    }
+    if (market.vix) {
+      const level = market.vix.price > 30 ? '极度恐慌' : market.vix.price > 20 ? '恐慌' : market.vix.price > 15 ? '谨慎' : '贪婪';
+      lines.push(`- VIX 恐慌指数：${market.vix.price.toFixed(2)}（${level}）`);
+    }
+    if (market.usdcny) {
+      lines.push(`- 美元/人民币：${market.usdcny.price.toFixed(4)}`);
+    }
+    lines.push('');
+  }
 
   // 组合概况 — 紧凑格式，节省 token
   lines.push('## 组合概况');
