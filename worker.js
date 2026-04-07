@@ -4,6 +4,9 @@
 
 const AI_MODEL = '@cf/moonshotai/kimi-k2.5';
 
+// 新浪财经滚动新闻 API — 获取近期财经新闻
+const NEWS_API = 'https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k=&num=30&page=1';
+
 const SYSTEM_PROMPT = `你是一位拥有 10 年以上经验的 A 股 ETF 投资组合分析师。你的客户是普通个人投资者，采用被动指数化投资策略，通过 ETF 构建多资产组合并定期再平衡。
 
 ## 你的分析风格
@@ -11,6 +14,7 @@ const SYSTEM_PROMPT = `你是一位拥有 10 年以上经验的 A 股 ETF 投资
 - 直接给结论：先说判断，再给依据，不要铺垫
 - 重点突出：对需要立即关注的问题用"**加粗**"标注
 - 务实可执行：建议要具体到"买/卖什么、大约多少"，而非"建议适当调整"这类模糊表述
+- 新闻驱动：你会收到近期财经新闻摘要，必须从中筛选与客户组合有实际影响的信息，并明确说明影响路径（例如：美联储降息 → 人民币升值压力缓解 → 利好 QDII 类 ETF）
 
 ## 输出格式要求
 使用 Markdown 格式，按以下结构组织报告：
@@ -18,23 +22,28 @@ const SYSTEM_PROMPT = `你是一位拥有 10 年以上经验的 A 股 ETF 投资
 ### 1. 组合体检（用 1-2 句话给出总体判断）
 给出组合的健康评级（优秀/良好/一般/需关注），并说明理由。
 
-### 2. 配置分析
-分析大类资产配置是否合理，重点指出偏离目标较大的类别。与常见的资产配置框架对比（如股债比例、国内外分散等）。
+### 2. 市场环境与影响
+从提供的近期新闻中，筛选 2-3 条与客户组合最相关的事件或趋势。每条需说明：
+- 事件本身（一句话概括）
+- 影响路径（如何传导到组合中的具体持仓）
+- 影响方向与程度（利好/利空/中性，影响大/小）
+如果新闻中没有对组合有显著影响的内容，简要说明当前市场环境整体平稳即可，不要强行关联。
 
-### 3. 风险提示
-识别当前组合的主要风险点（集中度、单一市场敞口、汇率、利率等），按重要性排序，每个风险点简要说明影响和程度。
+### 3. 配置分析
+分析大类资产配置是否合理，重点指出偏离目标较大的类别。结合当前市场环境判断偏离是否需要立即纠正（有时市场趋势支持暂时偏离）。
 
-### 4. 持仓点评
-只点评需要关注的个别品种（偏离大、浮亏多、或有特殊情况的），不需要逐一点评每个持仓。正常的品种一笔带过即可。
+### 4. 风险提示
+结合当前市场环境和持仓数据，识别 2-3 个最需要关注的风险点，按紧迫程度排序。每个风险点说明：触发条件、对组合的影响幅度、应对建议。
 
 ### 5. 操作建议
-给出 2-4 条具体可执行的建议，按优先级排序。每条建议说清楚：做什么、为什么、大致幅度。
+给出 2-4 条具体可执行的建议，按优先级排序。每条建议说清楚：做什么、为什么、大致幅度。如有个别品种需要特别关注（偏离大、与当前市场环境冲突等），在相关建议中一并说明。
 
 ## 约束
 - 不要使用表情符号
 - 不要生成表格（前端已有详细表格，避免重复）
 - 不要重复罗列原始数据，直接引用关键数字即可
 - 控制篇幅，整体 800-1200 字为宜
+- 如果新闻内容为空或不足，基于持仓数据本身进行分析，不要编造新闻
 - 在报告末尾加一句简短的风险免责声明`;
 
 export default {
@@ -111,6 +120,28 @@ function parseQuotes(raw) {
   return result;
 }
 
+// ========== 新闻获取 ==========
+
+/**
+ * 从新浪财经滚动新闻 API 获取近期财经新闻标题
+ * 失败时返回空数组，不影响主流程
+ */
+async function fetchNews() {
+  try {
+    const resp = await fetch(NEWS_API);
+    const json = await resp.json();
+    const items = json.result?.data || [];
+
+    return items
+      .map((item) => (item.title || '').trim())
+      .filter(Boolean)
+      .slice(0, 20);
+  } catch (err) {
+    console.error('获取新闻失败:', err.message);
+    return [];
+  }
+}
+
 // ========== AI 持仓分析 ==========
 
 async function handleAIAnalyze(request, env) {
@@ -135,7 +166,8 @@ async function handleAIAnalyze(request, env) {
   }
 
   try {
-    const prompt = buildAnalysisPrompt(portfolio);
+    const news = await fetchNews();
+    const prompt = buildAnalysisPrompt(portfolio, news);
     const stream = await env.AI.run(AI_MODEL, {
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -161,7 +193,7 @@ async function handleAIAnalyze(request, env) {
 /**
  * 构建分析 prompt，将持仓数据结构化为文本
  */
-function buildAnalysisPrompt(portfolio) {
+function buildAnalysisPrompt(portfolio, news = []) {
   const {
     totalValue, todayPnl, totalPnl, totalPnlPct,
     count, maxDeviation, categories, items,
@@ -169,7 +201,11 @@ function buildAnalysisPrompt(portfolio) {
 
   const lines = [];
 
-  lines.push('请根据以下数据分析我的 ETF 投资组合。');
+  lines.push('请根据以下持仓数据和近期新闻，分析我的 ETF 投资组合。');
+  lines.push('');
+
+  // 分析日期
+  lines.push(`分析日期：${new Date().toISOString().split('T')[0]}`);
   lines.push('');
 
   // 组合概况 — 紧凑格式，节省 token
@@ -206,6 +242,19 @@ function buildAnalysisPrompt(portfolio) {
       }
       lines.push(`- ${parts.join('，')}`);
     }
+    lines.push('');
+  }
+
+  // 近期财经新闻
+  if (news.length > 0) {
+    lines.push('## 近期财经新闻');
+    for (const headline of news) {
+      lines.push(`- ${headline}`);
+    }
+    lines.push('');
+  } else {
+    lines.push('## 近期财经新闻');
+    lines.push('（未获取到近期新闻，请基于持仓数据本身进行分析）');
     lines.push('');
   }
 
