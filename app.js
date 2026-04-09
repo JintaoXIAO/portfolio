@@ -1158,20 +1158,97 @@ function extractToken(line) {
 }
 
 /**
- * 简易 Markdown 渲染（支持标题、加粗、列表、分隔线、段落）
+ * 简易 Markdown 渲染（支持标题、加粗、列表、表格、引用块、分隔线、段落）
  */
 function renderMarkdown(container, text) {
   const lines = text.split('\n');
   let html = '';
   let inList = false;
   let listType = '';
+  let inTable = false;
+  let tableRows = [];
+  let inBlockquote = false;
+  let blockquoteLines = [];
+
+  function flushList() {
+    if (inList) { html += `</${listType}>`; inList = false; }
+  }
+
+  function flushTable() {
+    if (!inTable) return;
+    inTable = false;
+    if (tableRows.length === 0) return;
+
+    html += '<div class="ai-table-wrapper"><table class="ai-table">';
+
+    // 第一行为表头
+    html += '<thead><tr>';
+    for (const cell of tableRows[0]) {
+      html += `<th>${inlineFormat(cell)}</th>`;
+    }
+    html += '</tr></thead>';
+
+    // 跳过分隔行（第二行 ---），剩余为表体
+    html += '<tbody>';
+    for (let i = 2; i < tableRows.length; i++) {
+      html += '<tr>';
+      for (let j = 0; j < tableRows[i].length; j++) {
+        html += `<td>${inlineFormat(tableRows[i][j])}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    tableRows = [];
+  }
+
+  function flushBlockquote() {
+    if (!inBlockquote) return;
+    inBlockquote = false;
+    html += '<blockquote class="ai-blockquote">';
+    html += blockquoteLines.map((l) => `<p>${inlineFormat(l)}</p>`).join('');
+    html += '</blockquote>';
+    blockquoteLines = [];
+  }
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
+    // 表格行检测：包含 | 且非分隔行单独出现
+    const isTableRow = /^\|(.+)\|$/.test(line.trim());
+    const isTableSep = /^\|[\s:|-]+\|$/.test(line.trim());
+
+    if (isTableRow || isTableSep) {
+      flushList();
+      flushBlockquote();
+      if (!inTable) inTable = true;
+
+      if (!isTableSep) {
+        const cells = line.trim().slice(1, -1).split('|').map((c) => c.trim());
+        tableRows.push(cells);
+      } else {
+        // 分隔行占位，用于区分表头和表体
+        tableRows.push(null);
+      }
+      continue;
+    } else if (inTable) {
+      flushTable();
+    }
+
+    // 引用块
+    const bqMatch = line.match(/^>\s?(.*)/);
+    if (bqMatch) {
+      flushList();
+      flushTable();
+      inBlockquote = true;
+      blockquoteLines.push(bqMatch[1]);
+      continue;
+    } else if (inBlockquote) {
+      flushBlockquote();
+    }
+
     // 水平线
     if (/^---+$/.test(line.trim())) {
-      if (inList) { html += `</${listType}>`; inList = false; }
+      flushList();
       html += '<hr>';
       continue;
     }
@@ -1179,7 +1256,7 @@ function renderMarkdown(container, text) {
     // 标题
     const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
     if (headingMatch) {
-      if (inList) { html += `</${listType}>`; inList = false; }
+      flushList();
       const level = headingMatch[1].length;
       html += `<h${level + 2}>${inlineFormat(headingMatch[2])}</h${level + 2}>`;
       continue;
@@ -1189,7 +1266,7 @@ function renderMarkdown(container, text) {
     const olMatch = line.match(/^\d+\.\s+(.+)/);
     if (olMatch) {
       if (!inList || listType !== 'ol') {
-        if (inList) html += `</${listType}>`;
+        flushList();
         html += '<ol>';
         inList = true;
         listType = 'ol';
@@ -1202,7 +1279,7 @@ function renderMarkdown(container, text) {
     const ulMatch = line.match(/^[-*]\s+(.+)/);
     if (ulMatch) {
       if (!inList || listType !== 'ul') {
-        if (inList) html += `</${listType}>`;
+        flushList();
         html += '<ul>';
         inList = true;
         listType = 'ul';
@@ -1213,8 +1290,7 @@ function renderMarkdown(container, text) {
 
     // 非列表行 -> 关闭列表
     if (inList && line.trim() === '') {
-      html += `</${listType}>`;
-      inList = false;
+      flushList();
     }
 
     // 空行
@@ -1223,11 +1299,13 @@ function renderMarkdown(container, text) {
     }
 
     // 普通段落
-    if (inList) { html += `</${listType}>`; inList = false; }
+    flushList();
     html += `<p>${inlineFormat(line)}</p>`;
   }
 
-  if (inList) html += `</${listType}>`;
+  flushList();
+  flushTable();
+  flushBlockquote();
 
   container.innerHTML = html;
 }

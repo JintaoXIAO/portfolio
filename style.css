@@ -806,3 +806,63 @@ tfoot td:first-child {
   border-left: 4px solid var(--red);
   font-size: 0.85rem;
 }
+
+/* ========== AI 表格 ========== */
+.ai-table-wrapper {
+  overflow-x: auto;
+  margin: 12px 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.ai-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.ai-table thead th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.78rem;
+  padding: 8px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ai-table tbody td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.ai-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ai-table tbody tr:hover {
+  background: rgba(88, 166, 255, 0.04);
+}
+
+/* ========== AI 引用块 ========== */
+.ai-blockquote {
+  margin: 12px 0;
+  padding: 10px 16px;
+  border-left: 3px solid var(--accent);
+  background: rgba(88, 166, 255, 0.06);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.ai-blockquote p {
+  margin-bottom: 4px;
+}
+
+.ai-blockquote p:last-child {
+  margin-bottom: 0;
+}
