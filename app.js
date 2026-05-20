@@ -1132,7 +1132,8 @@ async function readSSEStream(body, contentDiv) {
  * 兼容两种格式：
  *   旧格式: {"response": "text"}
  *   OpenAI 格式: {"choices": [{"delta": {"content": "text"}}]}
- *   推理模型: {"choices": [{"delta": {"reasoning_content": "text"}}]}
+ * 注意：推理模型的 reasoning_content（思维链/自言自语）会被忽略，
+ *      只渲染最终的 content（正式回答）。
  */
 function extractToken(line) {
   const trimmed = (line || '').trim();
@@ -1146,10 +1147,9 @@ function extractToken(line) {
     if (data.response) return data.response;
 
     // OpenAI 兼容格式: {"choices": [{"delta": {...}}]}
+    // 只取 content（最终答案），忽略 reasoning_content / reasoning（思维链）
     const delta = data.choices?.[0]?.delta;
-    if (delta) {
-      return delta.content || delta.reasoning_content || delta.reasoning || null;
-    }
+    if (delta && delta.content) return delta.content;
 
     return null;
   } catch {
