@@ -975,3 +975,22 @@ tfoot td:first-child {
 .ai-answer {
   /* 继承 .ai-content 的字体设置即可，无需额外样式 */
 }
+
+.ai-truncated-warning {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(255, 193, 7, 0.08);
+  border: 1px solid rgba(255, 193, 7, 0.25);
+  color: #f0b849;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.ai-truncated-warning code {
+  background: rgba(255, 193, 7, 0.12);
+  color: #f0b849;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.78rem;
+}

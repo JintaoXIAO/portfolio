@@ -208,7 +208,9 @@ async function handleAIAnalyze(request, env) {
         { role: 'user', content: prompt },
       ],
       stream: true,
-      max_tokens: 4096,
+      // 推理模型的思维链也消耗 max_tokens 配额，需要给足空间
+      // 经验：思维链通常 2-4k，正文 1-2k，给 8k 留出充裕余地
+      max_tokens: 8192,
     });
 
     // 返回 SSE 流

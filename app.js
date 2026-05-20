@@ -1100,6 +1100,7 @@ async function readSSEStream(body, contentDiv) {
   let answerText = '';
   let buffer = '';
   let collapsedOnce = false;
+  let finishReason = null;
 
   // 构建容器：思考区块 + 答案区块
   contentDiv.innerHTML = `
@@ -1117,6 +1118,26 @@ async function readSSEStream(body, contentDiv) {
   const thinkingLabel = contentDiv.querySelector('.ai-thinking-label');
   const answerEl = contentDiv.querySelector('.ai-answer');
 
+  function handleToken(tok) {
+    if (!tok) return;
+    if (tok.type === 'reasoning') {
+      reasoningText += tok.text;
+      thinkingBody.textContent = reasoningText;
+      thinkingBody.scrollTop = thinkingBody.scrollHeight;
+    } else if (tok.type === 'content') {
+      if (!collapsedOnce) {
+        collapsedOnce = true;
+        thinkingEl.open = false;
+        thinkingLabel.textContent = '查看思考过程';
+        thinkingEl.classList.add('ai-thinking-done');
+      }
+      answerText += tok.text;
+      renderMarkdown(answerEl, answerText);
+    } else if (tok.type === 'finish') {
+      finishReason = tok.reason;
+    }
+  }
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1126,45 +1147,12 @@ async function readSSEStream(body, contentDiv) {
     buffer = lines.pop() || '';
 
     for (const line of lines) {
-      const tok = extractToken(line);
-      if (!tok) continue;
-
-      if (tok.type === 'reasoning') {
-        reasoningText += tok.text;
-        thinkingBody.textContent = reasoningText;
-        // 自动滚动到思考区块底部
-        thinkingBody.scrollTop = thinkingBody.scrollHeight;
-      } else if (tok.type === 'content') {
-        // 第一次收到正式回答时，折叠思考区块
-        if (!collapsedOnce) {
-          collapsedOnce = true;
-          thinkingEl.open = false;
-          thinkingLabel.textContent = '查看思考过程';
-          thinkingEl.classList.add('ai-thinking-done');
-        }
-        answerText += tok.text;
-        renderMarkdown(answerEl, answerText);
-      }
+      handleToken(extractToken(line));
     }
   }
 
   // 处理缓冲区残留
-  const last = extractToken(buffer);
-  if (last) {
-    if (last.type === 'reasoning') {
-      reasoningText += last.text;
-      thinkingBody.textContent = reasoningText;
-    } else if (last.type === 'content') {
-      if (!collapsedOnce) {
-        collapsedOnce = true;
-        thinkingEl.open = false;
-        thinkingLabel.textContent = '查看思考过程';
-        thinkingEl.classList.add('ai-thinking-done');
-      }
-      answerText += last.text;
-      renderMarkdown(answerEl, answerText);
-    }
-  }
+  handleToken(extractToken(buffer));
 
   // 流结束兜底
   if (!answerText && !reasoningText) {
@@ -1183,19 +1171,27 @@ async function readSSEStream(body, contentDiv) {
   if (!reasoningText) {
     thinkingEl.remove();
   } else if (!collapsedOnce) {
-    // 思考结束但没有正式 content（极少见），保持展开
     thinkingLabel.textContent = '思考过程';
+  }
+
+  // 被 max_tokens 截断时给出提示
+  if (finishReason === 'length') {
+    const warning = document.createElement('div');
+    warning.className = 'ai-truncated-warning';
+    warning.innerHTML = '⚠️ 回答因长度限制被截断，可重新分析或在 worker.js 中增加 <code>max_tokens</code>。';
+    answerEl.appendChild(warning);
   }
 }
 
 /**
  * 从 SSE 行中提取文本 token
- * 返回 { type: 'reasoning' | 'content', text: string } 或 null
+ * 返回 { type: 'reasoning' | 'content' | 'finish', text?: string, reason?: string } 或 null
  *
  * 兼容三种格式：
  *   旧格式: {"response": "text"} -> 视为 content
  *   OpenAI 兼容: {"choices": [{"delta": {"content": "text"}}]}
  *   推理模型: {"choices": [{"delta": {"reasoning_content": "text"}}]}
+ *   结束信号: {"choices": [{"finish_reason": "stop|length|..."}]}
  */
 function extractToken(line) {
   const trimmed = (line || '').trim();
@@ -1208,11 +1204,17 @@ function extractToken(line) {
     // 旧格式
     if (data.response) return { type: 'content', text: data.response };
 
-    const delta = data.choices?.[0]?.delta;
+    const choice = data.choices?.[0];
+    const delta = choice?.delta;
     if (delta) {
       if (delta.content) return { type: 'content', text: delta.content };
       const reasoning = delta.reasoning_content || delta.reasoning;
       if (reasoning) return { type: 'reasoning', text: reasoning };
+    }
+
+    // 结束原因（length = 被 max_tokens 截断）
+    if (choice?.finish_reason) {
+      return { type: 'finish', reason: choice.finish_reason };
     }
 
     return null;
