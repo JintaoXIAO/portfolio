@@ -866,3 +866,112 @@ tfoot td:first-child {
 .ai-blockquote p:last-child {
   margin-bottom: 0;
 }
+
+/* ========== AI 思考过程（推理模型思维链） ========== */
+
+.ai-thinking {
+  margin-bottom: 16px;
+  border: 1px solid rgba(139, 148, 158, 0.2);
+  border-radius: 8px;
+  background: rgba(22, 27, 34, 0.5);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.ai-thinking[open] {
+  border-color: rgba(88, 166, 255, 0.3);
+}
+
+.ai-thinking summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  list-style: none;
+  transition: background 0.2s ease;
+}
+
+.ai-thinking summary::-webkit-details-marker {
+  display: none;
+}
+
+.ai-thinking summary::after {
+  content: '▾';
+  margin-left: auto;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  transition: transform 0.2s ease;
+}
+
+.ai-thinking:not([open]) summary::after {
+  transform: rotate(-90deg);
+}
+
+.ai-thinking summary:hover {
+  background: rgba(88, 166, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.ai-thinking-icon {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(88, 166, 255, 0.6);
+  animation: ai-thinking-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.ai-thinking-done .ai-thinking-icon {
+  background: #3fb950;
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes ai-thinking-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.ai-thinking-label {
+  font-weight: 500;
+}
+
+.ai-thinking-body {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgba(139, 148, 158, 0.15);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-thinking-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ai-thinking-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ai-thinking-body::-webkit-scrollbar-thumb {
+  background: rgba(139, 148, 158, 0.25);
+  border-radius: 3px;
+}
+
+.ai-thinking-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 148, 158, 0.45);
+}
+
+.ai-answer {
+  /* 继承 .ai-content 的字体设置即可，无需额外样式 */
+}

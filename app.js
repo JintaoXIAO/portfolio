@@ -1087,53 +1087,115 @@ function finishAIAnalysis() {
 
 /**
  * 读取 SSE 流并实时渲染内容
+ *
+ * 兼容推理模型（如 Kimi K2.6）的两段式输出：
+ *   1. reasoning_content（思维链）：渲染到可折叠的"思考过程"区块
+ *   2. content（最终回答）：渲染到主内容区
+ * 当 content 开始流入时，自动折叠思考区块。
  */
 async function readSSEStream(body, contentDiv) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let fullText = '';
+  let reasoningText = '';
+  let answerText = '';
   let buffer = '';
+  let collapsedOnce = false;
 
-  contentDiv.innerHTML = '';
+  // 构建容器：思考区块 + 答案区块
+  contentDiv.innerHTML = `
+    <details class="ai-thinking" open>
+      <summary>
+        <span class="ai-thinking-icon"></span>
+        <span class="ai-thinking-label">正在思考...</span>
+      </summary>
+      <div class="ai-thinking-body"></div>
+    </details>
+    <div class="ai-answer"></div>
+  `;
+  const thinkingEl = contentDiv.querySelector('.ai-thinking');
+  const thinkingBody = contentDiv.querySelector('.ai-thinking-body');
+  const thinkingLabel = contentDiv.querySelector('.ai-thinking-label');
+  const answerEl = contentDiv.querySelector('.ai-answer');
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
-
-    // 解析 SSE 事件
     const lines = buffer.split('\n');
-    buffer = lines.pop() || ''; // 保留不完整的行
+    buffer = lines.pop() || '';
 
     for (const line of lines) {
-      const token = extractToken(line);
-      if (token) {
-        fullText += token;
-        renderMarkdown(contentDiv, fullText);
+      const tok = extractToken(line);
+      if (!tok) continue;
+
+      if (tok.type === 'reasoning') {
+        reasoningText += tok.text;
+        thinkingBody.textContent = reasoningText;
+        // 自动滚动到思考区块底部
+        thinkingBody.scrollTop = thinkingBody.scrollHeight;
+      } else if (tok.type === 'content') {
+        // 第一次收到正式回答时，折叠思考区块
+        if (!collapsedOnce) {
+          collapsedOnce = true;
+          thinkingEl.open = false;
+          thinkingLabel.textContent = '查看思考过程';
+          thinkingEl.classList.add('ai-thinking-done');
+        }
+        answerText += tok.text;
+        renderMarkdown(answerEl, answerText);
       }
     }
   }
 
-  // 处理缓冲区中剩余内容
-  const lastToken = extractToken(buffer);
-  if (lastToken) {
-    fullText += lastToken;
-    renderMarkdown(contentDiv, fullText);
+  // 处理缓冲区残留
+  const last = extractToken(buffer);
+  if (last) {
+    if (last.type === 'reasoning') {
+      reasoningText += last.text;
+      thinkingBody.textContent = reasoningText;
+    } else if (last.type === 'content') {
+      if (!collapsedOnce) {
+        collapsedOnce = true;
+        thinkingEl.open = false;
+        thinkingLabel.textContent = '查看思考过程';
+        thinkingEl.classList.add('ai-thinking-done');
+      }
+      answerText += last.text;
+      renderMarkdown(answerEl, answerText);
+    }
   }
 
-  if (!fullText) {
+  // 流结束兜底
+  if (!answerText && !reasoningText) {
     contentDiv.innerHTML = '<div class="ai-error">AI 未返回任何内容，请重试。</div>';
+    return;
+  }
+
+  // 如果只有思考没有正式回答（异常情况），把思考当成答案展示
+  if (!answerText && reasoningText) {
+    thinkingEl.remove();
+    answerEl.textContent = reasoningText;
+    return;
+  }
+
+  // 没有思考过程的情况，移除空的思考区块
+  if (!reasoningText) {
+    thinkingEl.remove();
+  } else if (!collapsedOnce) {
+    // 思考结束但没有正式 content（极少见），保持展开
+    thinkingLabel.textContent = '思考过程';
   }
 }
 
 /**
  * 从 SSE 行中提取文本 token
- * 兼容两种格式：
- *   旧格式: {"response": "text"}
- *   OpenAI 格式: {"choices": [{"delta": {"content": "text"}}]}
- * 注意：推理模型的 reasoning_content（思维链/自言自语）会被忽略，
- *      只渲染最终的 content（正式回答）。
+ * 返回 { type: 'reasoning' | 'content', text: string } 或 null
+ *
+ * 兼容三种格式：
+ *   旧格式: {"response": "text"} -> 视为 content
+ *   OpenAI 兼容: {"choices": [{"delta": {"content": "text"}}]}
+ *   推理模型: {"choices": [{"delta": {"reasoning_content": "text"}}]}
  */
 function extractToken(line) {
   const trimmed = (line || '').trim();
@@ -1143,13 +1205,15 @@ function extractToken(line) {
   try {
     const data = JSON.parse(trimmed.slice(6));
 
-    // 旧格式: {"response": "..."}
-    if (data.response) return data.response;
+    // 旧格式
+    if (data.response) return { type: 'content', text: data.response };
 
-    // OpenAI 兼容格式: {"choices": [{"delta": {...}}]}
-    // 只取 content（最终答案），忽略 reasoning_content / reasoning（思维链）
     const delta = data.choices?.[0]?.delta;
-    if (delta && delta.content) return delta.content;
+    if (delta) {
+      if (delta.content) return { type: 'content', text: delta.content };
+      const reasoning = delta.reasoning_content || delta.reasoning;
+      if (reasoning) return { type: 'reasoning', text: reasoning };
+    }
 
     return null;
   } catch {
