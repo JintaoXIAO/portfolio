@@ -1,0 +1,14 @@
+{
+  "name": "stock-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker for portfolio quotes proxy + AI analysis",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.93.0"
+  }
+}

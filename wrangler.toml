@@ -1,0 +1,9 @@
+# Cloudflare Worker 配置
+# 部署前请把 name 改成你 Cloudflare 上的现有 Worker 名称
+name = "stock-proxy"
+main = "worker.js"
+compatibility_date = "2025-05-01"
+
+# AI Binding — 调用 Workers AI（env.AI）
+[ai]
+binding = "AI"
