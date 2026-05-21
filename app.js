@@ -77,9 +77,10 @@ async function loadAndRender(isRefresh = false) {
 // ========== 数据获取 ==========
 
 /**
- * 加载持仓数据：优先从 Worker 的 KV 拉，失败则降级到 portfolio.csv
- * 已登录: 拉取该用户的持仓
- * 未登录: 拉取 demo 默认持仓（只读）
+ * 加载持仓数据
+ * 已登录: 从 /api/portfolio 拉取该用户的持仓
+ * 未登录: /api/portfolio 也会返回 demo 数据（worker 端处理）
+ * 兜底: worker 完全不可用时，前端内置一份硬编码兜底数据
  */
 async function loadHoldings() {
   try {
@@ -94,35 +95,26 @@ async function loadHoldings() {
       }
     }
   } catch (err) {
-    console.warn('从 Worker 加载持仓失败，降级到 portfolio.csv:', err.message);
+    console.warn('从 Worker 加载持仓失败，使用前端兜底数据:', err.message);
   }
-  return await fetchCSV('portfolio.csv');
+  return FALLBACK_HOLDINGS;
 }
 
-async function fetchCSV(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error('无法加载 portfolio.csv');
-  const text = await resp.text();
-  const lines = text
-    .trim()
-    .split('\n')
-    .filter((l) => l.trim());
-
-  return lines
-    .slice(1)
-    .map((line) => {
-      const values = line.split(',');
-      return {
-        symbol: (values[0] || '').trim(),
-        name: (values[1] || '').trim(),
-        shares: parseFloat(values[2]) || 0,
-        targetPct: parseFloat(values[3]) || 0,
-        costPrice: values[4] && values[4].trim() ? parseFloat(values[4]) : null,
-        category: (values[5] || '其他').trim(),
-      };
-    })
-    .filter((h) => h.symbol);
-}
+// Worker 完全不可用时使用的硬编码兜底（仅作最后保障）
+// 跟 default-portfolio.js 一致，但不能引用所以这里复制一份
+const FALLBACK_HOLDINGS = [
+  { symbol: 'sh510300', name: '沪深300ETF',  shares: 100000, targetPct: 25, costPrice: 4.250,  category: '宽基' },
+  { symbol: 'sh510500', name: '中证500ETF',  shares:  50000, targetPct: 15, costPrice: 6.180,  category: '宽基' },
+  { symbol: 'sh515050', name: '中证A50ETF',  shares:  60000, targetPct: 10, costPrice: 1.520,  category: '宽基' },
+  { symbol: 'sh588000', name: '科创50ETF',   shares:  40000, targetPct:  8, costPrice: 1.380,  category: '成长' },
+  { symbol: 'sh513100', name: '纳指ETF',     shares:  20000, targetPct: 10, costPrice: 1.860,  category: '海外' },
+  { symbol: 'sh513500', name: '标普500ETF',  shares:  15000, targetPct:  7, costPrice: 2.140,  category: '海外' },
+  { symbol: 'sh513010', name: '港股科技ETF', shares:  80000, targetPct:  6, costPrice: 0.620,  category: '港股' },
+  { symbol: 'sh518880', name: '黄金ETF',     shares:   5000, targetPct:  5, costPrice: 8.500,  category: '商品' },
+  { symbol: 'sh511360', name: '短融ETF',     shares:    500, targetPct:  6, costPrice: 110.50, category: '债券' },
+  { symbol: 'sh511260', name: '十年国债ETF', shares:    600, targetPct:  3, costPrice: 122.80, category: '债券' },
+  { symbol: 'cash',     name: '现金',        shares:  50000, targetPct:  5, costPrice: null,   category: '现金' },
+];
 
 async function fetchQuotes(symbols) {
   const resp = await fetch(`${WORKER_URL}?symbols=${symbols}`);
@@ -746,7 +738,7 @@ function renderAlerts({ maxDeviation, totalTargetPct, errorItems }) {
     addAlert(
       container,
       'error',
-      `配置错误：目标占比合计 ${totalTargetPct.toFixed(1)}%，应为 100%。请检查 portfolio.csv。`
+      `配置错误：目标占比合计 ${totalTargetPct.toFixed(1)}%，应为 100%。请打开"编辑持仓"调整。`
     );
   }
 
