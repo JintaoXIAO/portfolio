@@ -1,24 +1,26 @@
-// Cloudflare Worker — 腾讯股票接口代理 + AI 持仓分析 + 持仓/Prompt KV 存储
+// Cloudflare Worker — 腾讯股票接口代理 + AI 持仓分析 + 多用户持仓/Prompt 存储
 // 部署: bun run deploy
 //
 // 必需的 binding（已在 wrangler.toml 配置）:
 //   - AI:           Workers AI（用于持仓分析）
 //   - PORTFOLIO_KV: KV namespace（用于存储持仓与 prompt）
 //
-// 必需的 secret（用 wrangler secret put EDIT_PASSWORD 设置）:
-//   - EDIT_PASSWORD: 写入持仓/prompt 时校验的密码
+// 用户认证: Clerk (JWT 验证，公钥从 JWKS 获取，无需 secret)
 
 import { SYSTEM_PROMPT as DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 import { DEFAULT_PORTFOLIO } from './default-portfolio.js';
+import { verifyClerkToken } from './clerk-auth.js';
 
 const AI_MODEL = '@cf/moonshotai/kimi-k2.6';
 
 // 新浪财经滚动新闻 API — 获取近期财经新闻
 const NEWS_API = 'https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k=&num=30&page=1';
 
-// KV 中的 key 名
-const KV_KEY_PORTFOLIO = 'portfolio';
-const KV_KEY_PROMPT    = 'system_prompt';
+// KV key 命名规则:
+//   portfolio:<userId>     该用户的持仓
+//   prompt:<userId>        该用户的 system prompt
+const kvKeyPortfolio = (userId) => `portfolio:${userId}`;
+const kvKeyPrompt    = (userId) => `prompt:${userId}`;
 
 export default {
   async fetch(request, env) {
@@ -33,24 +35,24 @@ export default {
 
     // === 路由分发 ===
 
-    // AI 分析
+    // AI 分析（必须登录，避免免费额度被滥用）
     if (path === '/ai/analyze' && method === 'POST') {
       return handleAIAnalyze(request, env);
     }
 
     // 持仓 CRUD
     if (path === '/api/portfolio') {
-      if (method === 'GET') return handleGetPortfolio(env);
+      if (method === 'GET') return handleGetPortfolio(request, env);
       if (method === 'PUT') return handlePutPortfolio(request, env);
     }
 
     // Prompt CRUD
     if (path === '/api/prompt') {
-      if (method === 'GET') return handleGetPrompt(env);
+      if (method === 'GET') return handleGetPrompt(request, env);
       if (method === 'PUT') return handlePutPrompt(request, env);
     }
 
-    // 默认路由：股票行情代理（兼容旧接口）
+    // 默认路由：股票行情代理（公开，未登录也能查行情看 demo）
     return handleQuotes(request);
   },
 };
@@ -202,6 +204,12 @@ async function fetchMarketIndicators() {
 // ========== AI 持仓分析 ==========
 
 async function handleAIAnalyze(request, env) {
+  // AI 必须登录使用，避免 Workers AI 免费额度被滥用
+  const userId = await verifyClerkToken(request);
+  if (!userId) {
+    return jsonResponse({ error: '请先登录后再使用 AI 分析' }, 401);
+  }
+
   // 检查 AI binding 是否可用
   if (!env || !env.AI) {
     return jsonResponse(
@@ -223,11 +231,11 @@ async function handleAIAnalyze(request, env) {
   }
 
   try {
-    // 并行获取新闻、市场指标、KV 中的 system prompt
+    // 并行获取新闻、市场指标、当前用户的 system prompt
     const [news, marketIndicators, systemPrompt] = await Promise.all([
       fetchNews(),
       fetchMarketIndicators(),
-      readSystemPrompt(env),
+      readSystemPrompt(env, userId),
     ]);
     const prompt = buildAnalysisPrompt(portfolio, news, marketIndicators);
     const stream = await env.AI.run(AI_MODEL, {
@@ -362,15 +370,15 @@ function fmtCNY(value) {
   return '¥' + str;
 }
 
-// ========== KV 存储：持仓与 Prompt ==========
+// ========== KV 存储：持仓与 Prompt（按用户隔离） ==========
 
 /**
- * 从 KV 读取持仓数据，无值则返回默认值
+ * 读取指定用户的持仓；若 userId 为 null 或 KV 无数据则返回默认持仓
  */
-async function readPortfolio(env) {
-  if (!env?.PORTFOLIO_KV) return DEFAULT_PORTFOLIO;
+async function readPortfolio(env, userId) {
+  if (!userId || !env?.PORTFOLIO_KV) return DEFAULT_PORTFOLIO;
   try {
-    const raw = await env.PORTFOLIO_KV.get(KV_KEY_PORTFOLIO);
+    const raw = await env.PORTFOLIO_KV.get(kvKeyPortfolio(userId));
     if (!raw) return DEFAULT_PORTFOLIO;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_PORTFOLIO;
@@ -381,12 +389,12 @@ async function readPortfolio(env) {
 }
 
 /**
- * 从 KV 读取 system prompt，无值则返回默认值
+ * 读取指定用户的 system prompt；无值则返回默认值
  */
-async function readSystemPrompt(env) {
-  if (!env?.PORTFOLIO_KV) return DEFAULT_SYSTEM_PROMPT;
+async function readSystemPrompt(env, userId) {
+  if (!userId || !env?.PORTFOLIO_KV) return DEFAULT_SYSTEM_PROMPT;
   try {
-    const raw = await env.PORTFOLIO_KV.get(KV_KEY_PROMPT);
+    const raw = await env.PORTFOLIO_KV.get(kvKeyPrompt(userId));
     return raw && raw.trim() ? raw : DEFAULT_SYSTEM_PROMPT;
   } catch {
     return DEFAULT_SYSTEM_PROMPT;
@@ -394,39 +402,38 @@ async function readSystemPrompt(env) {
 }
 
 /**
- * 校验请求中的密码（X-Edit-Password 头）
- * 未配置 EDIT_PASSWORD secret 时拒绝所有写入
+ * GET /api/portfolio
+ * - 已登录：返回该用户持仓（无则返回默认值，标记 isDefault: true）
+ * - 未登录：返回默认持仓（demo 模式，标记 isDemo: true）
  */
-function checkAuth(request, env) {
-  const expected = env?.EDIT_PASSWORD;
-  if (!expected) {
-    return { ok: false, status: 503, error: '服务端未配置 EDIT_PASSWORD，无法执行写操作' };
+async function handleGetPortfolio(request, env) {
+  const userId = await verifyClerkToken(request);
+
+  if (!userId) {
+    return jsonResponse({
+      portfolio: DEFAULT_PORTFOLIO,
+      isDemo: true,
+      isDefault: true,
+    });
   }
-  const got = request.headers.get('X-Edit-Password') || '';
-  if (got !== expected) {
-    return { ok: false, status: 401, error: '密码错误' };
+
+  const data = await readPortfolio(env, userId);
+  let isDefault = true;
+  if (env?.PORTFOLIO_KV) {
+    const raw = await env.PORTFOLIO_KV.get(kvKeyPortfolio(userId));
+    isDefault = !raw;
   }
-  return { ok: true };
+  return jsonResponse({ portfolio: data, isDemo: false, isDefault });
 }
 
 /**
- * GET /api/portfolio — 返回持仓数据
- */
-async function handleGetPortfolio(env) {
-  const data = await readPortfolio(env);
-  return jsonResponse({
-    portfolio: data,
-    isDefault: !(env?.PORTFOLIO_KV && (await env.PORTFOLIO_KV.get(KV_KEY_PORTFOLIO))),
-  });
-}
-
-/**
- * PUT /api/portfolio — 写入持仓数据（需要密码）
- * Body: { portfolio: [...] }
+ * PUT /api/portfolio — 写入持仓（必须登录）
  */
 async function handlePutPortfolio(request, env) {
-  const auth = checkAuth(request, env);
-  if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
+  const userId = await verifyClerkToken(request);
+  if (!userId) {
+    return jsonResponse({ error: '请先登录后再保存' }, 401);
+  }
 
   if (!env?.PORTFOLIO_KV) {
     return jsonResponse({ error: '服务端未绑定 KV namespace' }, 503);
@@ -445,26 +452,44 @@ async function handlePutPortfolio(request, env) {
     return jsonResponse({ error: validation.error }, 400);
   }
 
-  await env.PORTFOLIO_KV.put(KV_KEY_PORTFOLIO, JSON.stringify(portfolio));
+  await env.PORTFOLIO_KV.put(kvKeyPortfolio(userId), JSON.stringify(portfolio));
   return jsonResponse({ success: true, count: portfolio.length });
 }
 
 /**
- * GET /api/prompt — 返回当前 system prompt
+ * GET /api/prompt
+ * - 已登录：返回该用户 prompt（无则返回默认值）
+ * - 未登录：返回默认 prompt（demo 模式）
  */
-async function handleGetPrompt(env) {
-  const text = await readSystemPrompt(env);
-  const isDefault = !(env?.PORTFOLIO_KV && (await env.PORTFOLIO_KV.get(KV_KEY_PROMPT)));
-  return jsonResponse({ prompt: text, isDefault });
+async function handleGetPrompt(request, env) {
+  const userId = await verifyClerkToken(request);
+
+  if (!userId) {
+    return jsonResponse({
+      prompt: DEFAULT_SYSTEM_PROMPT,
+      isDemo: true,
+      isDefault: true,
+    });
+  }
+
+  const text = await readSystemPrompt(env, userId);
+  let isDefault = true;
+  if (env?.PORTFOLIO_KV) {
+    const raw = await env.PORTFOLIO_KV.get(kvKeyPrompt(userId));
+    isDefault = !raw;
+  }
+  return jsonResponse({ prompt: text, isDemo: false, isDefault });
 }
 
 /**
- * PUT /api/prompt — 写入 system prompt（需要密码）
+ * PUT /api/prompt — 写入 prompt（必须登录）
  * Body: { prompt: "..." } 或 { reset: true } 重置为默认
  */
 async function handlePutPrompt(request, env) {
-  const auth = checkAuth(request, env);
-  if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
+  const userId = await verifyClerkToken(request);
+  if (!userId) {
+    return jsonResponse({ error: '请先登录后再保存' }, 401);
+  }
 
   if (!env?.PORTFOLIO_KV) {
     return jsonResponse({ error: '服务端未绑定 KV namespace' }, 503);
@@ -478,7 +503,7 @@ async function handlePutPrompt(request, env) {
   }
 
   if (body.reset === true) {
-    await env.PORTFOLIO_KV.delete(KV_KEY_PROMPT);
+    await env.PORTFOLIO_KV.delete(kvKeyPrompt(userId));
     return jsonResponse({ success: true, reset: true });
   }
 
@@ -490,7 +515,7 @@ async function handlePutPrompt(request, env) {
     return jsonResponse({ error: 'prompt 过长（最大 50000 字符）' }, 400);
   }
 
-  await env.PORTFOLIO_KV.put(KV_KEY_PROMPT, prompt);
+  await env.PORTFOLIO_KV.put(kvKeyPrompt(userId), prompt);
   return jsonResponse({ success: true, length: prompt.length });
 }
 
@@ -546,7 +571,7 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Edit-Password',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 }
 

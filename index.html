@@ -15,7 +15,18 @@
         <h1>投资组合追踪器</h1>
         <div class="subtitle">持仓监控 &middot; 偏离度分析 &middot; 调仓建议 &middot; AI 分析</div>
       </div>
-      <div id="market-status" class="market-status"></div>
+      <div class="header-right">
+        <div id="market-status" class="market-status"></div>
+        <div id="auth-area" class="auth-area">
+          <div id="auth-loading" class="auth-loading">登录态加载中...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Demo 提示横幅（未登录时显示） -->
+    <div id="demo-banner" class="demo-banner" hidden>
+      <span class="demo-banner-icon">👀</span>
+      <span>当前为只读演示模式，<a href="#" id="demo-login-link">登录</a>后可编辑自己的持仓与 AI Prompt。</span>
     </div>
 
     <!-- 加载状态 -->
@@ -235,25 +246,21 @@
     </div>
   </div>
 
-  <!-- 密码输入模态框（首次写入时弹出） -->
-  <div id="password-modal" class="modal" hidden>
-    <div class="modal-mask"></div>
-    <div class="modal-panel modal-panel-small">
-      <div class="modal-header">
-        <h3>需要密码</h3>
-        <button class="modal-close" data-close="password-modal">×</button>
-      </div>
-      <div class="modal-body">
-        <div class="modal-hint" style="margin-bottom: 12px;">写入持仓/Prompt 需要管理员密码。密码仅保存在当前浏览器，不会上传。</div>
-        <input type="password" id="password-input" class="modal-input" placeholder="请输入密码" autocomplete="off" />
-        <div id="password-error" class="modal-error" hidden></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-secondary" data-close="password-modal">取消</button>
-        <button id="confirm-password-btn" class="btn-primary">确认</button>
-      </div>
-    </div>
-  </div>
+  <!-- 密码输入模态框已废弃（改用 Clerk 登录） -->
+
+  <!-- Clerk SDK -->
+  <script>
+    // Clerk 配置 — Publishable Key 是公开的，前端必需
+    window.__CLERK_PUBLISHABLE_KEY = 'pk_test_YW1wbGUtZGlub3NhdXItNzAuY2xlcmsuYWNjb3VudHMuZGV2JA';
+    window.__CLERK_FRONTEND_API = 'https://ample-dinosaur-70.clerk.accounts.dev';
+  </script>
+  <script
+    src="https://ample-dinosaur-70.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+    type="text/javascript"
+    crossorigin="anonymous"
+    data-clerk-publishable-key="pk_test_YW1wbGUtZGlub3NhdXItNzAuY2xlcmsuYWNjb3VudHMuZGV2JA"
+    async
+  ></script>
 
   <script src="app.js"></script>
 </body>

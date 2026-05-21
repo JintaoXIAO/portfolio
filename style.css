@@ -59,6 +59,86 @@ body {
   font-size: 0.875rem;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* ========== 认证区 ========== */
+.auth-area {
+  display: flex;
+  align-items: center;
+}
+
+.auth-loading {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.auth-error {
+  font-size: 0.78rem;
+  color: #f85149;
+}
+
+.auth-login-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.auth-login-btn:hover {
+  background: #4493f8;
+}
+
+.auth-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-email {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-banner {
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  color: var(--text-primary);
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.demo-banner-icon {
+  font-size: 1.1rem;
+}
+
+.demo-banner a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.demo-banner a:hover {
+  text-decoration: underline;
+}
+
 /* ========== 盘口状态 ========== */
 .market-status {
   font-size: 0.8rem;
@@ -1336,4 +1416,16 @@ tfoot td:first-child {
     max-width: 100%;
     height: 100vh;
   }
+}
+
+/* AI 按钮锁定（未登录） */
+.ai-btn-locked {
+  opacity: 0.6;
+  position: relative;
+}
+
+.ai-btn-locked::after {
+  content: '🔒';
+  margin-left: 6px;
+  font-size: 0.85rem;
 }

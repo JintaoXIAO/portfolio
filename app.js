@@ -32,6 +32,9 @@ let isAIAnalyzing = false;
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+  // 先初始化 Clerk，让登录态尽早就绪
+  await setupClerk();
+
   showLoading(true);
   try {
     await loadAndRender();
@@ -75,10 +78,15 @@ async function loadAndRender(isRefresh = false) {
 
 /**
  * 加载持仓数据：优先从 Worker 的 KV 拉，失败则降级到 portfolio.csv
+ * 已登录: 拉取该用户的持仓
+ * 未登录: 拉取 demo 默认持仓（只读）
  */
 async function loadHoldings() {
   try {
-    const resp = await fetch(`${WORKER_URL}/api/portfolio`);
+    const token = await getAuthToken();
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const resp = await fetch(`${WORKER_URL}/api/portfolio`, { headers });
     if (resp.ok) {
       const data = await resp.json();
       if (Array.isArray(data.portfolio) && data.portfolio.length > 0) {
@@ -1019,6 +1027,11 @@ function setupAIAnalyzer() {
 
   btn.addEventListener('click', () => {
     if (isAIAnalyzing) return;
+    if (!currentUserId) {
+      // 未登录直接打开登录窗
+      if (window.Clerk) window.Clerk.openSignIn({ redirectUrl: window.location.href });
+      return;
+    }
     if (!currentPortfolio) {
       showError('请先加载持仓数据');
       return;
@@ -1057,9 +1070,16 @@ async function startAIAnalysis() {
   aiAbortController = new AbortController();
 
   try {
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('请先登录后再使用 AI 分析');
+    }
     const resp = await fetch(`${WORKER_URL}/ai/analyze`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
       body: JSON.stringify({ portfolio }),
       signal: aiAbortController.signal,
     });
@@ -1453,8 +1473,6 @@ function preparePortfolioForAI(portfolio) {
 
 // ========== 持仓 / Prompt 编辑器 ==========
 
-const PASSWORD_STORAGE_KEY = 'portfolio_edit_password';
-
 function setupEditors() {
   // 模态框关闭按钮
   document.querySelectorAll('[data-close]').forEach((btn) => {
@@ -1477,7 +1495,6 @@ function setupEditors() {
 
   setupPortfolioEditor();
   setupPromptEditor();
-  setupPasswordModal();
 }
 
 function openModal(id) {
@@ -1624,7 +1641,10 @@ function setupPromptEditor() {
     ta.disabled = true;
     openModal('prompt-modal');
     try {
-      const resp = await fetch(`${WORKER_URL}/api/prompt`);
+      const token = await getAuthToken();
+      const headers = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const resp = await fetch(`${WORKER_URL}/api/prompt`, { headers });
       const data = await resp.json();
       ta.value = data.prompt || '';
     } catch (err) {
@@ -1678,8 +1698,11 @@ async function resetPrompt() {
       method: 'PUT',
       body: JSON.stringify({ reset: true }),
     });
-    // 重新加载
-    const resp = await fetch(`${WORKER_URL}/api/prompt`);
+    // 重新加载（带 token）
+    const token = await getAuthToken();
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const resp = await fetch(`${WORKER_URL}/api/prompt`, { headers });
     const data = await resp.json();
     document.getElementById('prompt-textarea').value = data.prompt || '';
   } catch (err) {
@@ -1687,87 +1710,155 @@ async function resetPrompt() {
   }
 }
 
-// ----- 密码处理 -----
+// ----- Clerk 认证 -----
 
-function getStoredPassword() {
-  try { return localStorage.getItem(PASSWORD_STORAGE_KEY) || ''; } catch { return ''; }
-}
-
-function setStoredPassword(pw) {
-  try { localStorage.setItem(PASSWORD_STORAGE_KEY, pw); } catch {}
-}
-
-function clearStoredPassword() {
-  try { localStorage.removeItem(PASSWORD_STORAGE_KEY); } catch {}
-}
-
-let pendingPasswordResolve = null;
-
-function setupPasswordModal() {
-  const btn = document.getElementById('confirm-password-btn');
-  const input = document.getElementById('password-input');
-  if (!btn || !input) return;
-
-  btn.addEventListener('click', confirmPassword);
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') confirmPassword();
-  });
-
-  // 关闭模态时也要 reject 一下，免得 Promise 悬着
-  document.querySelectorAll('#password-modal [data-close]').forEach((b) => {
-    b.addEventListener('click', () => {
-      if (pendingPasswordResolve) {
-        pendingPasswordResolve(null);
-        pendingPasswordResolve = null;
+/**
+ * 等待 Clerk SDK 加载完成
+ * Clerk 通过 <script async> 加载，window.Clerk 异步出现
+ */
+function waitForClerk() {
+  return new Promise((resolve, reject) => {
+    if (window.Clerk) return resolve(window.Clerk);
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (window.Clerk) {
+        clearInterval(timer);
+        resolve(window.Clerk);
+      } else if (Date.now() - start > 15000) {
+        clearInterval(timer);
+        reject(new Error('Clerk SDK 加载超时（请检查网络是否能访问 clerk.accounts.dev）'));
       }
-    });
-  });
-}
-
-function confirmPassword() {
-  const input = document.getElementById('password-input');
-  const pw = input.value;
-  if (!pw) {
-    document.getElementById('password-error').textContent = '密码不能为空';
-    document.getElementById('password-error').hidden = false;
-    return;
-  }
-  document.getElementById('password-error').hidden = true;
-  closeModal('password-modal');
-  if (pendingPasswordResolve) {
-    pendingPasswordResolve(pw);
-    pendingPasswordResolve = null;
-  }
-}
-
-function askPassword() {
-  return new Promise((resolve) => {
-    pendingPasswordResolve = resolve;
-    const input = document.getElementById('password-input');
-    input.value = '';
-    document.getElementById('password-error').hidden = true;
-    openModal('password-modal');
-    setTimeout(() => input.focus(), 50);
+    }, 50);
   });
 }
 
 /**
- * 带密码认证的 fetch 包装
- * 401 时自动清除已存密码，弹窗重新输入并重试一次
+ * 初始化 Clerk，渲染顶部登录区
+ * 由 init() 在页面启动时调用
  */
-async function authedRequest(url, options = {}) {
-  let pw = getStoredPassword();
-  if (!pw) {
-    pw = await askPassword();
-    if (!pw) throw new Error('已取消');
+async function setupClerk() {
+  const authArea = document.getElementById('auth-area');
+  const banner = document.getElementById('demo-banner');
+
+  try {
+    const clerk = await waitForClerk();
+    await clerk.load();
+
+    const renderAuth = () => {
+      authArea.innerHTML = '';
+
+      if (clerk.user) {
+        // 已登录：显示用户按钮 + 邮箱
+        const wrap = document.createElement('div');
+        wrap.className = 'auth-user';
+        wrap.innerHTML = `
+          <span class="auth-email">${escapeAttr(clerk.user.primaryEmailAddress?.emailAddress || clerk.user.username || '已登录')}</span>
+          <div id="clerk-user-button"></div>
+        `;
+        authArea.appendChild(wrap);
+        clerk.mountUserButton(wrap.querySelector('#clerk-user-button'), {
+          afterSignOutUrl: window.location.href,
+        });
+        if (banner) banner.hidden = true;
+      } else {
+        // 未登录：显示登录按钮
+        const btn = document.createElement('button');
+        btn.className = 'auth-login-btn';
+        btn.textContent = '登录 / 注册';
+        btn.addEventListener('click', () => {
+          clerk.openSignIn({ redirectUrl: window.location.href });
+        });
+        authArea.appendChild(btn);
+        if (banner) banner.hidden = false;
+      }
+    };
+
+    renderAuth();
+
+    // 登录态变化时重渲染
+    clerk.addListener(({ user }) => {
+      const wasLoggedIn = !!currentUserId;
+      currentUserId = user?.id || null;
+      renderAuth();
+      updateEditButtonsVisibility();
+      // 登录状态变化后重载持仓数据
+      if ((!!currentUserId) !== wasLoggedIn) {
+        cachedHoldings = null;
+        loadAndRender(true).catch((e) => console.error(e));
+      }
+    });
+
+    currentUserId = clerk.user?.id || null;
+    updateEditButtonsVisibility();
+  } catch (err) {
+    console.error('[clerk] 初始化失败:', err);
+    authArea.innerHTML = '<div class="auth-error">登录服务不可用</div>';
+    if (banner) banner.hidden = false;
+    updateEditButtonsVisibility();
   }
 
-  let resp = await doRequest(url, options, pw);
+  // demo banner 上的"登录"链接
+  document.getElementById('demo-login-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (window.Clerk) window.Clerk.openSignIn({ redirectUrl: window.location.href });
+  });
+}
+
+/**
+ * 未登录时隐藏编辑按钮 + 给 AI 按钮加锁标记
+ */
+function updateEditButtonsVisibility() {
+  const loggedIn = !!currentUserId;
+  const editPortfolio = document.getElementById('edit-portfolio-btn');
+  const editPrompt = document.getElementById('edit-prompt-btn');
+  if (editPortfolio) editPortfolio.style.display = loggedIn ? '' : 'none';
+  if (editPrompt) editPrompt.style.display = loggedIn ? '' : 'none';
+
+  const aiBtn = document.getElementById('ai-analyze-btn');
+  if (aiBtn) {
+    if (!loggedIn) {
+      aiBtn.title = '登录后可使用 AI 分析';
+      aiBtn.classList.add('ai-btn-locked');
+    } else {
+      aiBtn.title = '';
+      aiBtn.classList.remove('ai-btn-locked');
+    }
+  }
+}
+
+/**
+ * 获取当前 Clerk session token；未登录返回 null
+ */
+async function getAuthToken() {
+  if (!window.Clerk?.session) return null;
+  try {
+    return await window.Clerk.session.getToken();
+  } catch {
+    return null;
+  }
+}
+
+let currentUserId = null;
+
+/**
+ * 带 Clerk JWT 的 fetch 包装
+ * 401 时引导用户登录后重试一次
+ */
+async function authedRequest(url, options = {}) {
+  let token = await getAuthToken();
+  if (!token) {
+    if (window.Clerk) {
+      window.Clerk.openSignIn({ redirectUrl: window.location.href });
+    }
+    throw new Error('请先登录');
+  }
+
+  let resp = await doRequest(url, options, token);
   if (resp.status === 401) {
-    clearStoredPassword();
-    pw = await askPassword();
-    if (!pw) throw new Error('已取消');
-    resp = await doRequest(url, options, pw);
+    // token 可能过期，强制刷新一次
+    token = await getAuthToken();
+    if (!token) throw new Error('登录已失效，请重新登录');
+    resp = await doRequest(url, options, token);
   }
 
   if (!resp.ok) {
@@ -1775,16 +1866,15 @@ async function authedRequest(url, options = {}) {
     try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
     throw new Error(msg);
   }
-  setStoredPassword(pw);
   return resp.json();
 }
 
-function doRequest(url, options, pw) {
+function doRequest(url, options, token) {
   return fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'X-Edit-Password': pw,
+      'Authorization': `Bearer ${token}`,
       ...(options.headers || {}),
     },
   });
