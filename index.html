@@ -92,7 +92,10 @@
       </div>
 
       <!-- 持仓明细表 -->
-      <div class="section-title">持仓明细</div>
+      <div class="section-title">
+        持仓明细
+        <button id="edit-portfolio-btn" class="edit-btn" title="编辑持仓">✎ 编辑持仓</button>
+      </div>
       <div class="table-wrapper">
         <table>
           <thead>
@@ -125,7 +128,10 @@
       </div>
 
       <!-- AI 持仓分析 -->
-      <div class="section-title">AI 持仓分析</div>
+      <div class="section-title">
+        AI 持仓分析
+        <button id="edit-prompt-btn" class="edit-btn" title="编辑 AI Prompt">✎ 编辑 Prompt</button>
+      </div>
       <div class="ai-card">
         <div class="ai-desc">基于 Cloudflare Workers AI，对当前持仓进行智能分析，提供配置评价、风险提示和调仓建议。</div>
         <div class="ai-actions">
@@ -161,6 +167,93 @@
       <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
     </svg>
   </button>
+
+  <!-- 持仓编辑模态框 -->
+  <div id="portfolio-modal" class="modal" hidden>
+    <div class="modal-mask"></div>
+    <div class="modal-panel modal-panel-large">
+      <div class="modal-header">
+        <h3>编辑持仓</h3>
+        <button class="modal-close" data-close="portfolio-modal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-toolbar">
+          <button id="add-holding-btn" class="btn-secondary">+ 添加一行</button>
+          <span class="modal-hint">代码示例: sh600519 / sz000001 / cash（现金行）</span>
+        </div>
+        <div class="modal-table-wrapper">
+          <table class="modal-table">
+            <thead>
+              <tr>
+                <th>代码</th>
+                <th>名称</th>
+                <th>持仓数</th>
+                <th>目标占比 %</th>
+                <th>成本价</th>
+                <th>分类</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="portfolio-edit-body"></tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3" style="text-align:right; color: var(--text-secondary);">目标占比合计:</td>
+                <td id="target-pct-total">0%</td>
+                <td colspan="3"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div id="portfolio-edit-error" class="modal-error" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="portfolio-modal">取消</button>
+        <button id="save-portfolio-btn" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt 编辑模态框 -->
+  <div id="prompt-modal" class="modal" hidden>
+    <div class="modal-mask"></div>
+    <div class="modal-panel modal-panel-tall">
+      <div class="modal-header">
+        <h3>编辑 AI System Prompt</h3>
+        <button class="modal-close" data-close="prompt-modal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-hint" style="margin-bottom: 8px;">这段 prompt 决定 AI 的角色定位与分析规则。修改后下次"开始分析"立即生效。</div>
+        <textarea id="prompt-textarea" class="modal-textarea" spellcheck="false"></textarea>
+        <div id="prompt-edit-error" class="modal-error" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <button id="reset-prompt-btn" class="btn-secondary btn-warning">重置为默认</button>
+        <div style="flex:1"></div>
+        <button class="btn-secondary" data-close="prompt-modal">取消</button>
+        <button id="save-prompt-btn" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 密码输入模态框（首次写入时弹出） -->
+  <div id="password-modal" class="modal" hidden>
+    <div class="modal-mask"></div>
+    <div class="modal-panel modal-panel-small">
+      <div class="modal-header">
+        <h3>需要密码</h3>
+        <button class="modal-close" data-close="password-modal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-hint" style="margin-bottom: 12px;">写入持仓/Prompt 需要管理员密码。密码仅保存在当前浏览器，不会上传。</div>
+        <input type="password" id="password-input" class="modal-input" placeholder="请输入密码" autocomplete="off" />
+        <div id="password-error" class="modal-error" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="password-modal">取消</button>
+        <button id="confirm-password-btn" class="btn-primary">确认</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

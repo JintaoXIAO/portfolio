@@ -45,6 +45,7 @@ async function init() {
   setupRebalancer();
   setupAutoRefresh();
   setupAIAnalyzer();
+  setupEditors();
 }
 
 async function loadAndRender(isRefresh = false) {
@@ -53,7 +54,7 @@ async function loadAndRender(isRefresh = false) {
   updateRefreshButton();
   try {
     if (!cachedHoldings) {
-      cachedHoldings = await fetchCSV('portfolio.csv');
+      cachedHoldings = await loadHoldings();
     }
     const holdings = cachedHoldings;
     const symbols = holdings
@@ -71,6 +72,24 @@ async function loadAndRender(isRefresh = false) {
 }
 
 // ========== 数据获取 ==========
+
+/**
+ * 加载持仓数据：优先从 Worker 的 KV 拉，失败则降级到 portfolio.csv
+ */
+async function loadHoldings() {
+  try {
+    const resp = await fetch(`${WORKER_URL}/api/portfolio`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (Array.isArray(data.portfolio) && data.portfolio.length > 0) {
+        return data.portfolio;
+      }
+    }
+  } catch (err) {
+    console.warn('从 Worker 加载持仓失败，降级到 portfolio.csv:', err.message);
+  }
+  return await fetchCSV('portfolio.csv');
+}
 
 async function fetchCSV(url) {
   const resp = await fetch(url);
@@ -1430,4 +1449,354 @@ function preparePortfolioForAI(portfolio) {
         actionText: i.actionText,
       })),
   };
+}
+
+// ========== 持仓 / Prompt 编辑器 ==========
+
+const PASSWORD_STORAGE_KEY = 'portfolio_edit_password';
+
+function setupEditors() {
+  // 模态框关闭按钮
+  document.querySelectorAll('[data-close]').forEach((btn) => {
+    btn.addEventListener('click', () => closeModal(btn.dataset.close));
+  });
+  // 点击遮罩关闭
+  document.querySelectorAll('.modal-mask').forEach((mask) => {
+    mask.addEventListener('click', () => {
+      const modal = mask.closest('.modal');
+      if (modal) closeModal(modal.id);
+    });
+  });
+  // ESC 关闭最上层模态
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const open = document.querySelector('.modal:not([hidden])');
+      if (open) closeModal(open.id);
+    }
+  });
+
+  setupPortfolioEditor();
+  setupPromptEditor();
+  setupPasswordModal();
+}
+
+function openModal(id) {
+  const el = document.getElementById(id);
+  if (el) el.hidden = false;
+}
+
+function closeModal(id) {
+  const el = document.getElementById(id);
+  if (el) el.hidden = true;
+}
+
+// ----- 持仓编辑器 -----
+
+function setupPortfolioEditor() {
+  const btn = document.getElementById('edit-portfolio-btn');
+  if (!btn) return;
+
+  btn.addEventListener('click', () => {
+    renderPortfolioEditTable(cachedHoldings || []);
+    document.getElementById('portfolio-edit-error').hidden = true;
+    openModal('portfolio-modal');
+  });
+
+  document.getElementById('add-holding-btn').addEventListener('click', () => {
+    appendPortfolioEditRow({ symbol: '', name: '', shares: 0, targetPct: 0, costPrice: null, category: '' });
+    updateTargetPctTotal();
+  });
+
+  document.getElementById('save-portfolio-btn').addEventListener('click', savePortfolioFromEditor);
+}
+
+function renderPortfolioEditTable(holdings) {
+  const tbody = document.getElementById('portfolio-edit-body');
+  tbody.innerHTML = '';
+  holdings.forEach((h) => appendPortfolioEditRow(h));
+  updateTargetPctTotal();
+}
+
+function appendPortfolioEditRow(h) {
+  const tbody = document.getElementById('portfolio-edit-body');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="cell-input" data-field="symbol" value="${escapeAttr(h.symbol || '')}" placeholder="sh600519" /></td>
+    <td><input type="text" class="cell-input" data-field="name" value="${escapeAttr(h.name || '')}" placeholder="名称" /></td>
+    <td><input type="number" class="cell-input" data-field="shares" value="${h.shares ?? 0}" min="0" step="100" /></td>
+    <td><input type="number" class="cell-input cell-target" data-field="targetPct" value="${h.targetPct ?? 0}" min="0" max="100" step="0.1" /></td>
+    <td><input type="number" class="cell-input" data-field="costPrice" value="${h.costPrice ?? ''}" min="0" step="0.001" placeholder="可选" /></td>
+    <td><input type="text" class="cell-input" data-field="category" value="${escapeAttr(h.category || '')}" placeholder="分类" /></td>
+    <td><button class="row-delete" title="删除该行">×</button></td>
+  `;
+  tr.querySelector('.row-delete').addEventListener('click', () => {
+    tr.remove();
+    updateTargetPctTotal();
+  });
+  tr.querySelector('.cell-target').addEventListener('input', updateTargetPctTotal);
+  tbody.appendChild(tr);
+}
+
+function updateTargetPctTotal() {
+  const inputs = document.querySelectorAll('#portfolio-edit-body .cell-target');
+  let total = 0;
+  inputs.forEach((i) => { total += parseFloat(i.value) || 0; });
+  const el = document.getElementById('target-pct-total');
+  el.textContent = total.toFixed(2) + '%';
+  el.style.color = Math.abs(total - 100) > 0.5 ? '#f85149' : '#3fb950';
+}
+
+function collectPortfolioFromEditor() {
+  const rows = document.querySelectorAll('#portfolio-edit-body tr');
+  const list = [];
+  for (const tr of rows) {
+    const obj = {};
+    tr.querySelectorAll('.cell-input').forEach((input) => {
+      const f = input.dataset.field;
+      const v = input.value.trim();
+      if (f === 'shares' || f === 'targetPct') {
+        obj[f] = parseFloat(v) || 0;
+      } else if (f === 'costPrice') {
+        obj[f] = v ? parseFloat(v) : null;
+      } else {
+        obj[f] = v;
+      }
+    });
+    list.push(obj);
+  }
+  return list;
+}
+
+async function savePortfolioFromEditor() {
+  const errEl = document.getElementById('portfolio-edit-error');
+  errEl.hidden = true;
+
+  const portfolio = collectPortfolioFromEditor();
+
+  // 客户端先做基本校验
+  if (portfolio.length === 0) {
+    showEditorError(errEl, '至少需要一行持仓');
+    return;
+  }
+  for (let i = 0; i < portfolio.length; i++) {
+    const h = portfolio[i];
+    if (!h.symbol) { showEditorError(errEl, `第 ${i + 1} 行缺少代码`); return; }
+    if (!h.name) { showEditorError(errEl, `第 ${i + 1} 行缺少名称`); return; }
+    if (!h.category) { showEditorError(errEl, `第 ${i + 1} 行缺少分类`); return; }
+  }
+  const total = portfolio.reduce((s, h) => s + (h.targetPct || 0), 0);
+  if (Math.abs(total - 100) > 0.5) {
+    showEditorError(errEl, `目标占比合计为 ${total.toFixed(2)}%，应为 100%`);
+    return;
+  }
+
+  const btn = document.getElementById('save-portfolio-btn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+
+  try {
+    await authedRequest(`${WORKER_URL}/api/portfolio`, {
+      method: 'PUT',
+      body: JSON.stringify({ portfolio }),
+    });
+    cachedHoldings = portfolio;
+    closeModal('portfolio-modal');
+    await loadAndRender(true);
+  } catch (err) {
+    showEditorError(errEl, '保存失败: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+// ----- Prompt 编辑器 -----
+
+function setupPromptEditor() {
+  const btn = document.getElementById('edit-prompt-btn');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    const errEl = document.getElementById('prompt-edit-error');
+    errEl.hidden = true;
+    const ta = document.getElementById('prompt-textarea');
+    ta.value = '加载中...';
+    ta.disabled = true;
+    openModal('prompt-modal');
+    try {
+      const resp = await fetch(`${WORKER_URL}/api/prompt`);
+      const data = await resp.json();
+      ta.value = data.prompt || '';
+    } catch (err) {
+      ta.value = '';
+      showEditorError(errEl, '加载失败: ' + err.message);
+    } finally {
+      ta.disabled = false;
+    }
+  });
+
+  document.getElementById('save-prompt-btn').addEventListener('click', savePromptFromEditor);
+  document.getElementById('reset-prompt-btn').addEventListener('click', resetPrompt);
+}
+
+async function savePromptFromEditor() {
+  const errEl = document.getElementById('prompt-edit-error');
+  errEl.hidden = true;
+  const ta = document.getElementById('prompt-textarea');
+  const prompt = ta.value.trim();
+
+  if (!prompt) {
+    showEditorError(errEl, 'Prompt 不能为空');
+    return;
+  }
+
+  const btn = document.getElementById('save-prompt-btn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+
+  try {
+    await authedRequest(`${WORKER_URL}/api/prompt`, {
+      method: 'PUT',
+      body: JSON.stringify({ prompt }),
+    });
+    closeModal('prompt-modal');
+  } catch (err) {
+    showEditorError(errEl, '保存失败: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+async function resetPrompt() {
+  if (!confirm('确定要重置为内置默认 Prompt 吗？该操作会删除你保存在云端的版本。')) return;
+  const errEl = document.getElementById('prompt-edit-error');
+  errEl.hidden = true;
+
+  try {
+    await authedRequest(`${WORKER_URL}/api/prompt`, {
+      method: 'PUT',
+      body: JSON.stringify({ reset: true }),
+    });
+    // 重新加载
+    const resp = await fetch(`${WORKER_URL}/api/prompt`);
+    const data = await resp.json();
+    document.getElementById('prompt-textarea').value = data.prompt || '';
+  } catch (err) {
+    showEditorError(errEl, '重置失败: ' + err.message);
+  }
+}
+
+// ----- 密码处理 -----
+
+function getStoredPassword() {
+  try { return localStorage.getItem(PASSWORD_STORAGE_KEY) || ''; } catch { return ''; }
+}
+
+function setStoredPassword(pw) {
+  try { localStorage.setItem(PASSWORD_STORAGE_KEY, pw); } catch {}
+}
+
+function clearStoredPassword() {
+  try { localStorage.removeItem(PASSWORD_STORAGE_KEY); } catch {}
+}
+
+let pendingPasswordResolve = null;
+
+function setupPasswordModal() {
+  const btn = document.getElementById('confirm-password-btn');
+  const input = document.getElementById('password-input');
+  if (!btn || !input) return;
+
+  btn.addEventListener('click', confirmPassword);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') confirmPassword();
+  });
+
+  // 关闭模态时也要 reject 一下，免得 Promise 悬着
+  document.querySelectorAll('#password-modal [data-close]').forEach((b) => {
+    b.addEventListener('click', () => {
+      if (pendingPasswordResolve) {
+        pendingPasswordResolve(null);
+        pendingPasswordResolve = null;
+      }
+    });
+  });
+}
+
+function confirmPassword() {
+  const input = document.getElementById('password-input');
+  const pw = input.value;
+  if (!pw) {
+    document.getElementById('password-error').textContent = '密码不能为空';
+    document.getElementById('password-error').hidden = false;
+    return;
+  }
+  document.getElementById('password-error').hidden = true;
+  closeModal('password-modal');
+  if (pendingPasswordResolve) {
+    pendingPasswordResolve(pw);
+    pendingPasswordResolve = null;
+  }
+}
+
+function askPassword() {
+  return new Promise((resolve) => {
+    pendingPasswordResolve = resolve;
+    const input = document.getElementById('password-input');
+    input.value = '';
+    document.getElementById('password-error').hidden = true;
+    openModal('password-modal');
+    setTimeout(() => input.focus(), 50);
+  });
+}
+
+/**
+ * 带密码认证的 fetch 包装
+ * 401 时自动清除已存密码，弹窗重新输入并重试一次
+ */
+async function authedRequest(url, options = {}) {
+  let pw = getStoredPassword();
+  if (!pw) {
+    pw = await askPassword();
+    if (!pw) throw new Error('已取消');
+  }
+
+  let resp = await doRequest(url, options, pw);
+  if (resp.status === 401) {
+    clearStoredPassword();
+    pw = await askPassword();
+    if (!pw) throw new Error('已取消');
+    resp = await doRequest(url, options, pw);
+  }
+
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  setStoredPassword(pw);
+  return resp.json();
+}
+
+function doRequest(url, options, pw) {
+  return fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Edit-Password': pw,
+      ...(options.headers || {}),
+    },
+  });
+}
+
+// ----- 工具 -----
+
+function showEditorError(el, msg) {
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }

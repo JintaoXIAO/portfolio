@@ -7,3 +7,8 @@ compatibility_date = "2025-05-01"
 # AI Binding — 调用 Workers AI（env.AI）
 [ai]
 binding = "AI"
+
+# KV Namespace — 存储持仓数据与 system prompt（env.PORTFOLIO_KV）
+[[kv_namespaces]]
+binding = "PORTFOLIO_KV"
+id = "43d4667ea03c4528b8c8b30f4d7a1ad4"

@@ -1,13 +1,24 @@
-// Cloudflare Worker — 腾讯股票接口代理 + AI 持仓分析
-// 部署方式：在 Cloudflare Dashboard 创建 Worker，将本文件与 prompts.js 一同上传
-// AI 功能需要在 Worker Settings > Variables 中添加 AI Binding，变量名设为 AI
+// Cloudflare Worker — 腾讯股票接口代理 + AI 持仓分析 + 持仓/Prompt KV 存储
+// 部署: bun run deploy
+//
+// 必需的 binding（已在 wrangler.toml 配置）:
+//   - AI:           Workers AI（用于持仓分析）
+//   - PORTFOLIO_KV: KV namespace（用于存储持仓与 prompt）
+//
+// 必需的 secret（用 wrangler secret put EDIT_PASSWORD 设置）:
+//   - EDIT_PASSWORD: 写入持仓/prompt 时校验的密码
 
-import { SYSTEM_PROMPT } from './prompts.js';
+import { SYSTEM_PROMPT as DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { DEFAULT_PORTFOLIO } from './default-portfolio.js';
 
 const AI_MODEL = '@cf/moonshotai/kimi-k2.6';
 
 // 新浪财经滚动新闻 API — 获取近期财经新闻
 const NEWS_API = 'https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k=&num=30&page=1';
+
+// KV 中的 key 名
+const KV_KEY_PORTFOLIO = 'portfolio';
+const KV_KEY_PROMPT    = 'system_prompt';
 
 export default {
   async fetch(request, env) {
@@ -17,10 +28,26 @@ export default {
     }
 
     const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
 
-    // 路由分发
-    if (url.pathname === '/ai/analyze' && request.method === 'POST') {
+    // === 路由分发 ===
+
+    // AI 分析
+    if (path === '/ai/analyze' && method === 'POST') {
       return handleAIAnalyze(request, env);
+    }
+
+    // 持仓 CRUD
+    if (path === '/api/portfolio') {
+      if (method === 'GET') return handleGetPortfolio(env);
+      if (method === 'PUT') return handlePutPortfolio(request, env);
+    }
+
+    // Prompt CRUD
+    if (path === '/api/prompt') {
+      if (method === 'GET') return handleGetPrompt(env);
+      if (method === 'PUT') return handlePutPrompt(request, env);
     }
 
     // 默认路由：股票行情代理（兼容旧接口）
@@ -196,15 +223,16 @@ async function handleAIAnalyze(request, env) {
   }
 
   try {
-    // 并行获取新闻和市场指标，不阻塞彼此
-    const [news, marketIndicators] = await Promise.all([
+    // 并行获取新闻、市场指标、KV 中的 system prompt
+    const [news, marketIndicators, systemPrompt] = await Promise.all([
       fetchNews(),
       fetchMarketIndicators(),
+      readSystemPrompt(env),
     ]);
     const prompt = buildAnalysisPrompt(portfolio, news, marketIndicators);
     const stream = await env.AI.run(AI_MODEL, {
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt },
       ],
       stream: true,
@@ -334,13 +362,191 @@ function fmtCNY(value) {
   return '¥' + str;
 }
 
+// ========== KV 存储：持仓与 Prompt ==========
+
+/**
+ * 从 KV 读取持仓数据，无值则返回默认值
+ */
+async function readPortfolio(env) {
+  if (!env?.PORTFOLIO_KV) return DEFAULT_PORTFOLIO;
+  try {
+    const raw = await env.PORTFOLIO_KV.get(KV_KEY_PORTFOLIO);
+    if (!raw) return DEFAULT_PORTFOLIO;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_PORTFOLIO;
+    return parsed;
+  } catch {
+    return DEFAULT_PORTFOLIO;
+  }
+}
+
+/**
+ * 从 KV 读取 system prompt，无值则返回默认值
+ */
+async function readSystemPrompt(env) {
+  if (!env?.PORTFOLIO_KV) return DEFAULT_SYSTEM_PROMPT;
+  try {
+    const raw = await env.PORTFOLIO_KV.get(KV_KEY_PROMPT);
+    return raw && raw.trim() ? raw : DEFAULT_SYSTEM_PROMPT;
+  } catch {
+    return DEFAULT_SYSTEM_PROMPT;
+  }
+}
+
+/**
+ * 校验请求中的密码（X-Edit-Password 头）
+ * 未配置 EDIT_PASSWORD secret 时拒绝所有写入
+ */
+function checkAuth(request, env) {
+  const expected = env?.EDIT_PASSWORD;
+  if (!expected) {
+    return { ok: false, status: 503, error: '服务端未配置 EDIT_PASSWORD，无法执行写操作' };
+  }
+  const got = request.headers.get('X-Edit-Password') || '';
+  if (got !== expected) {
+    return { ok: false, status: 401, error: '密码错误' };
+  }
+  return { ok: true };
+}
+
+/**
+ * GET /api/portfolio — 返回持仓数据
+ */
+async function handleGetPortfolio(env) {
+  const data = await readPortfolio(env);
+  return jsonResponse({
+    portfolio: data,
+    isDefault: !(env?.PORTFOLIO_KV && (await env.PORTFOLIO_KV.get(KV_KEY_PORTFOLIO))),
+  });
+}
+
+/**
+ * PUT /api/portfolio — 写入持仓数据（需要密码）
+ * Body: { portfolio: [...] }
+ */
+async function handlePutPortfolio(request, env) {
+  const auth = checkAuth(request, env);
+  if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
+
+  if (!env?.PORTFOLIO_KV) {
+    return jsonResponse({ error: '服务端未绑定 KV namespace' }, 503);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: '请求体不是合法的 JSON' }, 400);
+  }
+
+  const { portfolio } = body;
+  const validation = validatePortfolio(portfolio);
+  if (!validation.ok) {
+    return jsonResponse({ error: validation.error }, 400);
+  }
+
+  await env.PORTFOLIO_KV.put(KV_KEY_PORTFOLIO, JSON.stringify(portfolio));
+  return jsonResponse({ success: true, count: portfolio.length });
+}
+
+/**
+ * GET /api/prompt — 返回当前 system prompt
+ */
+async function handleGetPrompt(env) {
+  const text = await readSystemPrompt(env);
+  const isDefault = !(env?.PORTFOLIO_KV && (await env.PORTFOLIO_KV.get(KV_KEY_PROMPT)));
+  return jsonResponse({ prompt: text, isDefault });
+}
+
+/**
+ * PUT /api/prompt — 写入 system prompt（需要密码）
+ * Body: { prompt: "..." } 或 { reset: true } 重置为默认
+ */
+async function handlePutPrompt(request, env) {
+  const auth = checkAuth(request, env);
+  if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
+
+  if (!env?.PORTFOLIO_KV) {
+    return jsonResponse({ error: '服务端未绑定 KV namespace' }, 503);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: '请求体不是合法的 JSON' }, 400);
+  }
+
+  if (body.reset === true) {
+    await env.PORTFOLIO_KV.delete(KV_KEY_PROMPT);
+    return jsonResponse({ success: true, reset: true });
+  }
+
+  const { prompt } = body;
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+    return jsonResponse({ error: 'prompt 必须是非空字符串' }, 400);
+  }
+  if (prompt.length > 50000) {
+    return jsonResponse({ error: 'prompt 过长（最大 50000 字符）' }, 400);
+  }
+
+  await env.PORTFOLIO_KV.put(KV_KEY_PROMPT, prompt);
+  return jsonResponse({ success: true, length: prompt.length });
+}
+
+/**
+ * 校验持仓数据格式
+ */
+function validatePortfolio(portfolio) {
+  if (!Array.isArray(portfolio)) {
+    return { ok: false, error: 'portfolio 必须是数组' };
+  }
+  if (portfolio.length === 0) {
+    return { ok: false, error: 'portfolio 不能为空' };
+  }
+  if (portfolio.length > 100) {
+    return { ok: false, error: '持仓项不能超过 100 条' };
+  }
+
+  let totalTarget = 0;
+  for (let i = 0; i < portfolio.length; i++) {
+    const h = portfolio[i];
+    if (!h || typeof h !== 'object') {
+      return { ok: false, error: `第 ${i + 1} 项不是对象` };
+    }
+    if (typeof h.symbol !== 'string' || !h.symbol.trim()) {
+      return { ok: false, error: `第 ${i + 1} 项缺少 symbol` };
+    }
+    if (typeof h.name !== 'string' || !h.name.trim()) {
+      return { ok: false, error: `第 ${i + 1} 项缺少 name` };
+    }
+    if (typeof h.shares !== 'number' || h.shares < 0 || !isFinite(h.shares)) {
+      return { ok: false, error: `第 ${i + 1} 项的 shares 不合法` };
+    }
+    if (typeof h.targetPct !== 'number' || h.targetPct < 0 || h.targetPct > 100) {
+      return { ok: false, error: `第 ${i + 1} 项的 targetPct 不合法` };
+    }
+    if (h.costPrice != null && (typeof h.costPrice !== 'number' || h.costPrice < 0)) {
+      return { ok: false, error: `第 ${i + 1} 项的 costPrice 不合法` };
+    }
+    totalTarget += h.targetPct;
+  }
+
+  // 允许 ±0.5% 误差
+  if (Math.abs(totalTarget - 100) > 0.5) {
+    return { ok: false, error: `目标占比合计为 ${totalTarget.toFixed(2)}%，应为 100%` };
+  }
+
+  return { ok: true };
+}
+
 // ========== 通用工具 ==========
 
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Edit-Password',
   };
 }
 
